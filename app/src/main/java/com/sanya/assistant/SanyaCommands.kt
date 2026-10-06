@@ -288,6 +288,56 @@ class StepRunner(private val ctx: Context, private val say: (String) -> Unit, pr
     private val noSlang = Regex("^(?:when i say|if i say|whenever i say|forget|nickname|set nickname|give nickname|add nickname|another nickname|that means|it means|this means|i meant|ignore)")
     private var lastCommand = ""
     private var lastUnknown = ""
+
+    // ---------- Conversation context ----------    
+    private var lastApp = ""
+    private var lastSearch = ""
+    private var lastContact = ""
+    private var lastPlace = ""
+    private var lastTopic = ""
+
+    // Used for short follow-up commands such as:
+    // "open YouTube" → "search Tamil songs" → "play the first one"
+    private fun rememberContext(step: Step) {
+        when (step) {
+            is Step.OpenApp -> {
+                lastApp = step.name
+                lastTopic = step.name
+            }
+    
+            is Step.Search -> {
+                lastSearch = step.q
+                lastTopic = step.q
+            }
+
+            is Step.Call -> {
+                lastContact = step.contact
+                lastTopic = step.contact
+            }
+
+            is Step.Sms -> {
+                lastContact = step.contact
+                lastTopic = step.contact
+            }
+
+            is Step.Navigate -> {
+                lastPlace = step.place
+                lastTopic = step.place
+            }
+
+            is Step.Note -> {
+                lastTopic = step.text
+            }
+
+            is Step.AddTodo -> {
+                lastTopic = step.text
+            }
+
+            else -> {
+                // Keep the previous context.
+            }
+        }
+    }
     private data class Contact(val id: Long, val name: String, val number: String)
 
     init { Brain.setup(ctx) }
@@ -341,8 +391,12 @@ private fun plan(raw: String): List<Step> {
      *
      * "open youtube"
      */
-    val candidates = IntentEngine.alternatives(learnedCommand)
-
+    /*
+     * 2. Send the command through IntentEngine.
+     */
+    val candidates = IntentEngine.alternatives(
+        applyContext(learnedCommand)
+    )
     if (candidates.isEmpty()) {
         return CommandParser.parse(learnedCommand)
     }
@@ -369,7 +423,110 @@ private fun plan(raw: String): List<Step> {
      */
     return CommandParser.parse(learnedCommand)
 }
-
+    /**
+ * Converts short follow-up phrases into complete commands
+ * using the current conversation context.
+ */
+    private fun applyContext(command: String): String {
+    
+        var text = command.trim()
+    
+        if (text.isEmpty()) return text
+    
+        // "open it" / "launch it"
+        if (
+            Regex(
+                """^(?:open|launch|start)\s+(?:it|that|this)$"""
+            ).matches(text)
+        ) {
+            if (lastApp.isNotEmpty()) {
+                return "open $lastApp"
+            }
+        }
+    
+        // "search for that"
+        if (
+            Regex(
+                """^(?:search|google|look up)\s+(?:it|that|this)$"""
+            ).matches(text)
+        ) {
+            if (lastTopic.isNotEmpty()) {
+                return "search $lastTopic"
+            }
+        }
+    
+        // "play it"
+        if (
+            Regex(
+                """^(?:play|watch)\s+(?:it|that|this)$"""
+            ).matches(text)
+        ) {
+            if (lastSearch.isNotEmpty()) {
+                return "play $lastSearch"
+            }
+        }
+    
+        // "play the first one"
+        if (
+            Regex(
+                """^(?:play|watch)\s+(?:the\s+)?(?:first|top|first\s+result)\s+(?:one|result)?$"""
+            ).matches(text)
+        ) {
+            if (lastSearch.isNotEmpty()) {
+                return "play $lastSearch"
+            }
+        }
+    
+        // "play the second one"
+        if (
+            Regex(
+                """^(?:play|watch)\s+(?:the\s+)?second\s+(?:one|result)?$"""
+            ).matches(text)
+        ) {
+            if (lastSearch.isNotEmpty()) {
+                return "play $lastSearch"
+            }
+        }
+    
+        // "call him/her/them"
+        if (
+            Regex(
+                """^(?:call|ring|phone)\s+(?:him|her|them)$"""
+            ).matches(text)
+        ) {
+            if (lastContact.isNotEmpty()) {
+                return "call $lastContact"
+            }
+        }
+    
+        // "message him/her/them"
+        if (
+            Regex(
+                """^(?:message|text|sms)\s+(?:him|her|them)\s+(.+)$"""
+            ).find(text)?.let { true } == true
+        ) {
+            val match = Regex(
+                """^(?:message|text|sms)\s+(?:him|her|them)\s+(.+)$"""
+            ).find(text)
+    
+            if (match != null && lastContact.isNotEmpty()) {
+                return "message $lastContact saying ${match.groupValues[1]}"
+            }
+        }
+    
+        // "navigate there"
+        if (
+            Regex(
+                """^(?:navigate|go|take me)\s+(?:there|to that place)$"""
+            ).matches(text)
+        ) {
+            if (lastPlace.isNotEmpty()) {
+                return "navigate to $lastPlace"
+            }
+        }
+    
+        return text
+    }
     // True if every part of the sentence matches a known command.
     fun understands(raw: String): Boolean {
         val p = plan(raw)
@@ -381,7 +538,10 @@ private fun plan(raw: String): List<Step> {
         val steps = plan(raw)
         if (steps.any { it is Step.Unknown }) lastUnknown = Brain.clean(raw)
         else if (steps.isNotEmpty() && steps.none { it is Step.Again || it is Step.Mean || it is Step.Teach }) lastCommand = raw
-        steps.forEachIndexed { i, s -> ui.postDelayed({ exec(s) }, i * 2500L) }
+        steps.forEachIndexed { i, s ->
+            rememberContext(s)
+            ui.postDelayed({ exec(s) }, i * 2500L)
+        }
         return steps.size
     }
 
