@@ -1517,65 +1517,77 @@ class StepRunner(
     // UNDERSTANDS
     // ---------------------------------------------------------
 
-    fun understands(
-        raw: String
-    ): Boolean {
+    fun understands(raw: String): Boolean {
 
-        val p =
-            plan(raw)
+        val steps = plan(raw)
 
-        return p.isNotEmpty() &&
-                p.none {
-                    it is Step.Unknown
-                }
+    // Normal command understood.
+        if (
+            steps.isNotEmpty() &&
+            steps.none { it is Step.Unknown }
+    ) {
+            return true
     }
+
+    // Offline AI Brain understood the question.
+        return AIBrain.answer(raw) != null
+} 
 
     // ---------------------------------------------------------
     // HANDLE
     // ---------------------------------------------------------
 
-    fun handle(
-        raw: String
-    ): Int {
+    fun handle(raw: String) {
 
-        val steps =
-            plan(raw)
-
+        val steps = plan(raw)
+    
+        // ---------------------------------------------------------
+        // 1. Normal Sanya command
+        // ---------------------------------------------------------
+    
         if (
-            steps.any {
-                it is Step.Unknown
-            }
-        ) {
-            lastUnknown =
-                Brain.clean(raw)
-        } else if (
             steps.isNotEmpty() &&
-            steps.none {
-                it is Step.Again ||
-                        it is Step.Mean ||
-                        it is Step.Teach
-            }
+            steps.none { it is Step.Unknown }
         ) {
-            lastCommand =
-                raw
+    
+            steps.forEachIndexed { i, step ->
+    
+                rememberContext(step)
+    
+                ui.postDelayed(
+                    {
+                        exec(step)
+                    },
+                    i * 2500L
+                )
+            }
+    
+            return
         }
-
-        steps.forEachIndexed { i, s ->
-
-            // Remember context immediately.
-            rememberContext(s)
-
-            ui.postDelayed(
-                {
-                    exec(s)
-                },
-                i * 2500L
-            )
+    
+        // ---------------------------------------------------------
+        // 2. Offline AI Brain
+        // ---------------------------------------------------------
+    
+        val aiAnswer = AIBrain.answer(raw)
+    
+        if (aiAnswer != null) {
+    
+            speak(aiAnswer)
+    
+            return
         }
-
-        return steps.size
+    
+        // ---------------------------------------------------------
+        // 3. Completely unknown command
+        // ---------------------------------------------------------
+    
+        lastUnknown = raw
+    
+        speak(
+            "Sorry, I don't understand that yet."
+        )
     }
-
     private fun name() =
         Brain.setting(
             "name",
