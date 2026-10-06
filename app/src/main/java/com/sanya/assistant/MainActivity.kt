@@ -2,6 +2,7 @@ package com.sanya.assistant
 
 import android.Manifest
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
@@ -11,13 +12,17 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
     private lateinit var editor: EditText
+    private lateinit var status: TextView
+    private lateinit var dl: Button
     private var loaded = ""
 
     private fun same(a: String, b: String) = a.trimEnd() == b.trimEnd()
@@ -31,6 +36,9 @@ class MainActivity : Activity() {
             setOnClickListener { click() }
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, w)
         }
+        fun wide(label: String, click: () -> Unit) = btn(label, 0f, click).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
         loaded = Brain.text()
         editor = EditText(this).apply {
             setText(loaded)
@@ -40,25 +48,54 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
         }
+        status = TextView(this).apply { textSize = 14f; setPadding(0, pad / 2, 0, pad / 2) }
+        dl = wide("Download offline voice (about 40 MB)") { download() }
+        val start = wide("Start Sanya") { go() }.apply { textSize = 20f }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(btn("Save", 1f) { saveNow(); toast("Saved") })
             addView(btn("Share / backup", 1f) { share() })
-        }
-        val start = btn("Start Sanya", 0f) { go() }.apply {
-            textSize = 20f
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad * 2, pad, pad)
             addView(start)
             addView(row)
+            addView(status)
+            addView(dl)
+            addView(wide("Keep Sanya alive (Xiaomi settings)") { keepAlive() })
             addView(editor)
         })
+        refreshModel()
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    private fun refreshModel() {
+        val ok = ModelStore.ready(this)
+        status.text = if (ok) "Offline voice: installed. Tap Start Sanya." else "Offline voice: not installed (one-time download, needs internet)"
+        dl.visibility = if (ok) View.GONE else View.VISIBLE
+    }
+
+    private fun download() {
+        saveNow()
+        dl.isEnabled = false
+        Thread {
+            val err = ModelStore.download(this) { p -> runOnUiThread { status.text = "Downloading… $p%" } }
+            runOnUiThread {
+                dl.isEnabled = true
+                if (err == null) refreshModel() else status.text = "Download failed: $err"
+            }
+        }.start()
+    }
+
+    private fun keepAlive() {
+        Toast.makeText(this, "Turn on Autostart. Set Battery saver to No restrictions. Allow 'Display pop-up windows while running in the background'.", Toast.LENGTH_LONG).show()
+        val tries = listOf(
+            Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        for (i in tries) { if (runCatching { startActivity(i) }.isSuccess) return }
+    }
 
     private fun saveNow() {
         Brain.save(editor.text.toString())
@@ -78,6 +115,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        refreshModel()
         val cur = Brain.text()
         if (same(editor.text.toString(), loaded) && !same(cur, loaded)) { editor.setText(cur); loaded = cur }
     }
@@ -100,6 +138,7 @@ class MainActivity : Activity() {
     }
 
     private fun start() {
+        getSharedPreferences("sanya", MODE_PRIVATE).edit().putBoolean("autostart", true).apply()
         startForegroundService(Intent(this, BubbleService::class.java))
         finish()
     }
