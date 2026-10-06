@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -38,17 +39,28 @@ class BubbleService : Service() {
     private lateinit var runner: StepRunner
     private val circle = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(IDLE) }
     private val am by lazy { getSystemService(AUDIO_SERVICE) as AudioManager }
+    private val prefs by lazy { getSharedPreferences("sanya", MODE_PRIVATE) }
     private val muted = mutableListOf<Int>()
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var sr: SpeechRecognizer? = null
+    private var sr: SpeechRecognizer? = null        // Google voice (backup)
+    private var ears: Ears? = null                  // offline Vosk voice
+    private var voskReady = false
+    private var loading = false
+    private var wakeLock: PowerManager.WakeLock? = null
     private var pulse: ObjectAnimator? = null
-    private var handsFree = false   // always-listening mode (long-press the bubble)
-    private var awaiting = false    // next phrase is a command, no wake word needed
-    private var listening = false
+    private var handsFree = false   // always listening for "Sanya" (long-press the bubble)
+    private var awaiting = false    // the next sentence is a command, no wake word needed
+    private var listening = false   // Google voice is active
     private var pending = 0         // spoken sentences still queued
     private var size = 0
+    private var wakeRx = Regex("sanya")
     private val hideCaption = Runnable { caption.visibility = View.GONE }
+    private val giveUp = Runnable {
+        awaiting = false
+        if (!handsFree) ears?.stop()
+        look(if (handsFree) HANDS_FREE else IDLE, false)
+    }
 
     companion object {
         const val IDLE = 0xFF6C5CE7.toInt()
@@ -58,14 +70,17 @@ class BubbleService : Service() {
 
     override fun onBind(i: Intent?): IBinder? = null
 
+    private fun notif() = Notification.Builder(this, "sanya")
+        .setContentTitle("Sanya is ready")
+        .setSmallIcon(android.R.drawable.ic_btn_speak_now).build()
+
     override fun onCreate() {
         super.onCreate()
         Brain.setup(this)
+        wakeRx = wake()
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel("sanya", "Sanya", NotificationManager.IMPORTANCE_MIN))
-        startForeground(1, Notification.Builder(this, "sanya")
-            .setContentTitle("Sanya is ready")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now).build())
+        startForeground(1, notif())
         tts = TextToSpeech(this) {
             if (it == TextToSpeech.SUCCESS) {
                 ttsReady = true
@@ -79,16 +94,62 @@ class BubbleService : Service() {
             }
         }
         runner = StepRunner(this, { say(it) }, { show(it, 8000L) })
+        ears = Ears(this,
+            onPartial = { p -> ui.post { if (awaiting || wakeRx.containsMatchIn(p)) show("🎤 $p") } },
+            onFinal = { t -> ui.post { heard(listOf(t)) } },
+            onProblem = { m -> ui.post { stopEars(m) } })
         showBubble()
         makeCaption()
+        loadEars()
+    }
+
+    // Called again each time you tap Start in the app, so a freshly downloaded voice gets loaded.
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForeground(1, notif())
+        loadEars()
+        return START_STICKY
+    }
+
+    private fun loadEars() {
+        val e = ears ?: return
+        if (voskReady || loading || !ModelStore.ready(this)) return
+        loading = true
+        Thread {
+            val ok = e.load()
+            ui.post {
+                loading = false
+                voskReady = ok
+                if (ok) {
+                    show("Offline voice ready")
+                    if (prefs.getBoolean("handsfree", false)) setHandsFree(true, false)
+                } else show("Offline voice failed to load")
+            }
+        }.start()
+    }
+
+    private fun stopEars(msg: String) {
+        handsFree = false; awaiting = false
+        prefs.edit().putBoolean("handsfree", false).apply()
+        ears?.stop(); releaseLock()
+        look(IDLE, false)
+        say(msg)
     }
 
     // Wake words come from the brain file, so you can add the ways the phone mishears "Sanya".
     private fun wake(): Regex {
-        val w = Brain.setting("wake words", "sanya").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-        val alt = w.ifEmpty { listOf("sanya") }.joinToString("|") { Regex.escape(it) }
-        return Regex("^\\s*(?:(?:hey|hi|ok|okay)\\s+)?(?:$alt)\\b[ ,.]*")
+        val w = (Brain.setting("wake words", "sanya").split(",").map { it.trim().lowercase() } +
+            listOf("sanya", "saniya", "sania", "sunya", "sonya")).filter { it.isNotEmpty() }.distinct()
+        return Regex("^\\s*(?:(?:hey|hi|ok|okay|uh|um|so)\\s+)?(?:" + w.joinToString("|") { Regex.escape(it) } + ")\\b[ ,.]*")
     }
+
+    private fun takeLock() {
+        if (Brain.setting("screen off listening", "on") == "off") return
+        val w = wakeLock ?: (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sanya:ears").also { wakeLock = it }
+        if (!w.isHeld) w.acquire()
+    }
+
+    private fun releaseLock() { wakeLock?.let { if (it.isHeld) it.release() } }
 
     // ---------- Bubble ----------
     private fun showBubble() {
@@ -168,7 +229,7 @@ class BubbleService : Service() {
         ui.removeCallbacks(hideCaption); ui.postDelayed(hideCaption, ms)
     }
 
-    // ---------- Beep control (each hands-free restart beeps) ----------
+    // ---------- Beep control (only needed for the Google voice backup) ----------
     private fun muteBeep() {
         for (st in intArrayOf(AudioManager.STREAM_MUSIC, AudioManager.STREAM_SYSTEM)) {
             if (st == AudioManager.STREAM_MUSIC && am.isMusicActive) continue   // never cut your video audio
@@ -192,25 +253,49 @@ class BubbleService : Service() {
         sr?.let { if (listening) { it.cancel(); finish(it) } }   // never listen to my own voice
         val t = tts ?: return
         if (!ttsReady) return
+        ears?.paused = true                                       // offline ears also pause while I talk
         pending++
-        if (t.speak(s, TextToSpeech.QUEUE_ADD, null, "u" + System.nanoTime()) == TextToSpeech.ERROR) pending--
+        if (t.speak(s, TextToSpeech.QUEUE_ADD, null, "u" + System.nanoTime()) == TextToSpeech.ERROR) {
+            pending = maxOf(0, pending - 1); resume()
+        }
     }
 
     // After she finishes talking, go back to listening if hands-free (or waiting for a command)
     private fun resume() {
+        if (voskReady) {
+            ui.postDelayed({
+                if (pending > 0) return@postDelayed
+                if (handsFree || awaiting) {
+                    ears?.paused = false
+                    ears?.start()
+                    if (awaiting) {
+                        look(LISTENING, true)
+                        ui.removeCallbacks(giveUp); ui.postDelayed(giveUp, 8000)
+                    }
+                } else ears?.stop()
+            }, 450)
+            return
+        }
         if ((handsFree || awaiting) && !listening && pending == 0) {
             ui.postDelayed({ if ((handsFree || awaiting) && !listening && pending == 0) listen() }, 500)
         }
     }
 
-    // ---------- Listening (online first, offline fallback) ----------
+    // ---------- Listening ----------
     private fun tap() {
         buzz()
         if (pending > 0) { tts?.stop(); pending = 0 }   // tap = stop talking
         awaiting = true                                  // a tap means: no wake word needed
-        if (listening) sr?.stopListening() else listen()
+        if (voskReady) {
+            ears?.paused = false
+            ears?.start()
+            look(LISTENING, true)
+            show("Listening…")
+            ui.removeCallbacks(giveUp); ui.postDelayed(giveUp, 8000)
+        } else if (listening) sr?.stopListening() else listen()
     }
 
+    // Google voice backup (online first, offline pack if there is no internet)
     private fun listen(offline: Boolean = false) {
         if (listening || pending > 0) return
         if (!SpeechRecognizer.isRecognitionAvailable(this)) { say("No speech service on this phone"); return }
@@ -280,43 +365,64 @@ class BubbleService : Service() {
     }
 
     // ---------- Understanding ----------
-    // The recognizer gives up to 5 guesses. Pick the one Sanya actually understands.
+    // Google gives up to 5 guesses, Vosk gives 1. Pick the one Sanya actually understands.
     private fun heard(all: List<String>) {
-        val w = wake()
         val lows = all.map { it.lowercase() }
-        val pool = if (handsFree && !awaiting) lows.filter { w.containsMatchIn(it) } else lows
-        if (pool.isEmpty()) { resume(); return }   // not meant for me, keep waiting
-        val pick = pool.firstOrNull { val c = w.replace(it, "").trim(); c.isNotEmpty() && runner.understands(c) } ?: pool.first()
+        val pool = if (handsFree && !awaiting) lows.filter { wakeRx.containsMatchIn(it) } else lows
+        if (pool.isEmpty()) { if (!voskReady) resume(); return }   // not meant for me, keep waiting
+        ears?.paused = true
+        ui.removeCallbacks(giveUp)
+        look(if (handsFree) HANDS_FREE else IDLE, false)
+        val pick = pool.firstOrNull { val c = wakeRx.replace(it, "").trim(); c.isNotEmpty() && runner.understands(c) } ?: pool.first()
         show("“$pick”")
-        val cmd = w.replace(pick, "").trim()
+        val cmd = wakeRx.replace(pick, "").trim()
         awaiting = false
         if (cmd.isEmpty()) { awaiting = true; buzz(); say("Yes?") } else execute(cmd)
     }
 
     private fun execute(c: String) {
         when {
-            Regex("^(?:exit|quit|close|shut down)$").containsMatchIn(c) -> { say("Bye"); ui.postDelayed({ stopSelf() }, 1500) }
+            Regex("^(?:exit|quit|close|shut down)$").containsMatchIn(c) -> {
+                prefs.edit().putBoolean("autostart", false).putBoolean("handsfree", false).apply()
+                say("Bye"); ui.postDelayed({ stopSelf() }, 1500)
+            }
             Regex("stop listening|hands.?free off").containsMatchIn(c) -> setHandsFree(false)
             Regex("hands.?free on|hands.?free mode|start listening").containsMatchIn(c) -> setHandsFree(true)
-            else -> { val n = runner.handle(c); ui.postDelayed({ resume() }, n * 2500L + 1500L) }
+            else -> {
+                val n = runner.handle(c)
+                wakeRx = wake()
+                ui.postDelayed({ resume() }, n * 2500L + 1500L)
+            }
         }
     }
 
-    private fun setHandsFree(on: Boolean) {
+    private fun setHandsFree(on: Boolean, announce: Boolean = true) {
         handsFree = on; awaiting = false
-        if (!on) { sr?.destroy(); sr = null; listening = false; unmuteBeep() }
+        prefs.edit().putBoolean("handsfree", on).apply()
+        if (!on) { sr?.destroy(); sr = null; listening = false; unmuteBeep(); ears?.stop(); releaseLock() }
         look(if (on) HANDS_FREE else IDLE, false)
-        say(if (on) "Hands free on. Say Sanya, then your command." else "Hands free off")
-        if (on) resume()
+        if (on && voskReady) { takeLock(); ears?.paused = false; ears?.start() }
+        if (announce) {
+            say(if (on) {
+                if (voskReady) "Hands free on. Just say Sanya, then your command."
+                else "Hands free on, using Google voice. For no beeps, download offline voice in the Sanya app."
+            } else "Hands free off")
+        } else show(if (on) "Hands free is on" else "Hands free off")
+        if (on && !voskReady) resume()
     }
 
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
         unmuteBeep()
+        releaseLock()
         pulse?.cancel()
         if (::bubble.isInitialized) wm.removeView(bubble)
         if (::caption.isInitialized) wm.removeView(caption)
         sr?.destroy(); tts?.shutdown()
+        val e = ears
+        ears = null
+        e?.stop()
+        Thread { e?.close() }.start()
         super.onDestroy()
     }
 }
