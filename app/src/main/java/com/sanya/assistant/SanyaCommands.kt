@@ -38,135 +38,55 @@ import kotlin.math.abs
 import kotlin.math.floor
 
 sealed class Step {
-
     data class OpenApp(val name: String) : Step()
-
-    data class Call(
-        val contact: String,
-        val video: Boolean,
-        val whatsapp: Boolean
-    ) : Step()
-
-    data class Sms(
-        val contact: String,
-        val text: String
-    ) : Step()
-
+    data class Call(val contact: String, val video: Boolean, val whatsapp: Boolean) : Step()
+    data class Sms(val contact: String, val text: String) : Step()
     data class Timer(val seconds: Int) : Step()
-
-    data class Alarm(
-        val hour: Int,
-        val min: Int
-    ) : Step()
-
-    data class Remind(
-        val text: String,
-        val seconds: Int
-    ) : Step()
-
-    data class Event(
-        val title: String,
-        val start: Long
-    ) : Step()
-
-    data class Toggle(
-        val what: String,
-        val on: Boolean
-    ) : Step()
-
+    data class Alarm(val hour: Int, val min: Int) : Step()
+    data class Remind(val text: String, val seconds: Int) : Step()
+    data class Event(val title: String, val start: Long) : Step()
+    data class Toggle(val what: String, val on: Boolean) : Step()
     data class Volume(val up: Boolean) : Step()
-
     data class Media(val key: String) : Step()
-
     object Photo : Step()
-
-    data class Search(
-        val q: String,
-        val youtube: Boolean
-    ) : Step()
-
+    data class Search(val q: String, val youtube: Boolean) : Step()
     data class Navigate(val place: String) : Step()
-
     data class Info(val kind: String) : Step()
-
     data class AddTodo(val text: String) : Step()
-
     data class RemoveTodo(val text: String) : Step()
-
     object ReadTodos : Step()
-
     object ClearTodos : Step()
-
     data class Note(val text: String) : Step()
-
     object ReadNotes : Step()
-
     object ClearNotes : Step()
-
-    data class Nick(
-        val nicks: List<String>,
-        val real: String
-    ) : Step()
-
-    data class Teach(
-        val phrases: List<String>,
-        val cmd: String
-    ) : Step()
-
-    data class WordMap(
-        val word: String,
-        val meaning: String
-    ) : Step()
-
+    data class Nick(val nicks: List<String>, val real: String) : Step()
+    data class Teach(val phrases: List<String>, val cmd: String) : Step()
+    data class WordMap(val word: String, val meaning: String) : Step()
     data class Ignore(val word: String) : Step()
-
     data class Mean(val cmd: String) : Step()
-
-    data class Remember(
-        val key: String,
-        val value: String
-    ) : Step()
-
+    data class Remember(val key: String, val value: String) : Step()
     data class Recall(val key: String) : Step()
-
     data class Copy(val key: String) : Step()
-
     data class Forget(val key: String) : Step()
-
     data class SetName(val name: String) : Step()
-
     object Brief : Step()
-
     object Stats : Step()
-
     object OpenBrain : Step()
-
     object Again : Step()
-
     data class Reply(val text: String) : Step()
-
     data class Unknown(val raw: String) : Step()
 }
 
 object CommandParser {
+    private const val VERBS = "open|launch|start|run|call|video|voice|whatsapp|set|turn|search|play|watch|google|find|navigate|message|msg|text|sms|add|put|remove|delete|clear|read|show|what|take|volume|note|remember|remind|copy|forget|switch|ring|dial|tell|nickname|next|previous|pause|resume|skip|schedule|calculate|brief|stop|good|hello|hi|flip|roll|again|ignore|when|check|am"
 
-    private const val VERBS =
-        "open|launch|start|run|call|video|voice|whatsapp|set|turn|" +
-        "search|play|watch|google|find|navigate|message|msg|text|sms|" +
-        "add|put|remove|delete|clear|read|show|what|take|volume|note|" +
-        "remember|remind|copy|forget|switch|ring|dial|tell|nickname|" +
-        "next|previous|pause|resume|skip|schedule|calculate|brief|stop|" +
-        "good|hello|hi|flip|roll|again|ignore|when|check|am"
+    // Splits at "and"/"then" only when a new command follows,
+    // so "add milk and eggs" stays whole.
+    private val splitter =
+        Regex("\\b(?:and then|after that|then|and)\\s+(?=(?:$VERBS)\\b)")
 
-    private val splitter = Regex(
-        "\\b(?:and then|after that|then|and)\\s+" +
-                "(?=(?:$VERBS)\\b)"
-    )
-
-    private val builtinFill = Regex(
-        "\\b(?:please|pls|plz|kindly|just|quickly|" +
-                "i want to|i wanna|i need to|lets|let's|for me)\\b"
-    )
+    private val builtinFill =
+        Regex("\\b(?:please|pls|plz|kindly|just|quickly|i want to|i wanna|i need to|lets|let's|for me)\\b")
 
     private val nums = listOf(
         "twenty five" to 25,
@@ -197,58 +117,28 @@ object CommandParser {
     )
 
     private val talk = listOf(
-        Regex("^(?:hello|hi|hey|hai|hii|yo)$") to
-                "Hello{n}! How can I help?",
-
-        Regex("^vanakkam") to
-                "Vanakkam{n}! How can I help?",
-
-        Regex("good (?:evening|afternoon)") to
-                "Good evening{n}!",
-
-        Regex("good night") to
-                "Good night{n}, sleep well",
-
-        Regex(
-            "how are you|how r u|how are u|what.?s up|wassup|\\bsup\\b"
-        ) to
-                "I'm doing great, thanks for asking",
-
-        Regex("\\bthank|\\bthx") to
-                "You're welcome{n}",
-
-        Regex("who are you|your name") to
-                "I'm Sanya, your personal assistant",
-
-        Regex("who am i|what.?s my name|what is my name") to
-                "Your name is {name}",
-
-        Regex(
-            "what can you do|^help$"
-        ) to
-                "I can open apps, call and message, set timers, alarms and reminders, play music, search, navigate, calculate, keep notes and secrets, and learn your nicknames and slang. Say show my brain to edit what I know.",
-
-        Regex("love you") to
-                "That's sweet. I'm always here to help"
+        Regex("^(?:hello|hi|hey|hai|hii|yo)$") to "Hello{n}! How can I help?",
+        Regex("^vanakkam") to "Vanakkam{n}! How can I help?",
+        Regex("good (?:evening|afternoon)") to "Good evening{n}!",
+        Regex("good night") to "Good night{n}, sleep well",
+        Regex("how are you|how r u|how are u|what.?s up|wassup|\\bsup\\b") to "I'm doing great, thanks for asking",
+        Regex("\\bthank|\\bthx") to "You're welcome{n}",
+        Regex("who are you|your name") to "I'm Sanya, your personal assistant",
+        Regex("who am i|what.?s my name|what is my name") to "Your name is {name}",
+        Regex("what can you do|^help$") to "I can open apps, call and message, set timers, alarms and reminders, play music, search, navigate, calculate, keep notes and secrets, and learn your nicknames and slang. Say show my brain to edit what I know.",
+        Regex("love you") to "That's sweet. I'm always here to help"
     )
 
     private fun digits(s: String): String {
-
-        if (
-            !Regex(
-                "timer|alarm|remind|minute|hour|second|schedule|event|" +
-                        "meeting|appointment|percent|plus|minus|times|" +
-                        "divided|multiplied"
-            ).containsMatchIn(s)
+        if (!Regex("timer|alarm|remind|minute|hour|second|schedule|event|meeting|appointment|percent|plus|minus|times|divided|multiplied")
+                .containsMatchIn(s)
         ) {
             return s
         }
 
         var r = s
             .replace("half an hour", "30 minutes")
-            .replace(
-                Regex("\\b(?:an|a) (hour|minute)")
-            ) {
+            .replace(Regex("\\b(?:an|a) (hour|minute)")) {
                 "1 " + it.groupValues[1]
             }
 
@@ -263,20 +153,17 @@ object CommandParser {
     }
 
     private fun normalize(raw: String): String {
-
         var s = raw
             .lowercase()
             .replace(Regex("[,!?]"), " ")
             .trim()
 
-        // Tanglish:
-        // youtube open pannu
-        // ravi ku call pannu
-        // comedy songs podu
-
+        // Tanglish word order:
+        // "youtube open pannu"
+        // "ravi ku call pannu"
+        // "comedy songs podu"
         s = Regex(
-            "^(.+?)\\s+(?:ku\\s+)?(open|call|search|play)\\s+" +
-                    "(?:pannu|pannunga|pannungal|seiyu)$"
+            "^(.+?)\\s+(?:ku\\s+)?(open|call|search|play)\\s+(?:pannu|pannunga|pannungal|seiyu)$"
         ).replace(s) {
             it.groupValues[2] + " " + it.groupValues[1]
         }
@@ -288,16 +175,12 @@ object CommandParser {
         }
 
         s = s.replace(
-            Regex(
-                "^(?:hello|hi|hey|hai|hii|yo)\\s+"
-            ),
+            Regex("^(?:hello|hi|hey|hai|hii|yo)\\s+"),
             ""
         )
 
         s = s.replace(
-            Regex(
-                "^(?:can|could|would|will)\\s+you\\s+"
-            ),
+            Regex("^(?:can|could|would|will)\\s+you\\s+"),
             ""
         )
 
@@ -308,10 +191,10 @@ object CommandParser {
         if (extra.isNotEmpty()) {
             s = Regex(
                 "\\b(?:" +
-                        extra.joinToString("|") {
-                            Regex.escape(it)
-                        } +
-                        ")\\b"
+                    extra.joinToString("|") {
+                        Regex.escape(it)
+                    } +
+                    ")\\b"
             ).replace(s, " ")
         }
 
@@ -338,7 +221,6 @@ object CommandParser {
     }
 
     fun parse(sentence: String): List<Step> {
-
         val s = normalize(sentence)
 
         if (s.isEmpty()) {
@@ -356,7 +238,6 @@ object CommandParser {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .map { p ->
-
                 val st = one(p, wa)
 
                 if (
@@ -377,10 +258,7 @@ object CommandParser {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
 
-    private fun secs(
-        n: Int,
-        u: String
-    ) =
+    private fun secs(n: Int, u: String) =
         if (u.startsWith("h")) {
             n * 3600
         } else if (u.startsWith("m")) {
@@ -389,21 +267,18 @@ object CommandParser {
             n
         }
 
-    private fun fmt(d: Double): String =
-        if (
-            d == floor(d) &&
-            abs(d) < 1e12
-        ) {
+    private fun fmt(d: Double) =
+        if (d == floor(d) && abs(d) < 1e12) {
             d.toLong().toString()
         } else {
             "%.2f".format(d)
         }
 
+    // Sentences that must stay in one piece.
     private fun whole(s: String): Step? {
 
         Regex(
-            "^(?:when i say|if i say|whenever i say)\\s+" +
-                    "(.+?)\\s+i mean\\s+(.+)"
+            "^(?:when i say|if i say|whenever i say)\\s+(.+?)\\s+i mean\\s+(.+)"
         ).find(s)?.let {
             return Step.WordMap(
                 it.groupValues[1],
@@ -412,8 +287,7 @@ object CommandParser {
         }
 
         Regex(
-            "^(?:when i say|if i say|whenever i say)\\s+" +
-                    "(.+?)\\s+(?:then\\s+)?(?:do|run)\\s+(.+)"
+            "^(?:when i say|if i say|whenever i say)\\s+(.+?)\\s+(?:then\\s+)?(?:do|run)\\s+(.+)"
         ).find(s)?.let {
             return Step.Teach(
                 parts(it.groupValues[1]),
@@ -432,8 +306,7 @@ object CommandParser {
         }
 
         Regex(
-            "^(?:set\\s+|give\\s+|add\\s+)?(?:another\\s+)?" +
-                    "nickname\\s+(.+?)\\s+(?:for|to|of)\\s+(.+)"
+            "^(?:set\\s+|give\\s+|add\\s+)?(?:another\\s+)?nickname\\s+(.+?)\\s+(?:for|to|of)\\s+(.+)"
         ).find(s)?.let {
             return Step.Nick(
                 parts(it.groupValues[1]),
@@ -478,8 +351,7 @@ object CommandParser {
         }
 
         Regex(
-            "^(?:take a |make a |add a |write a |write )?" +
-                    "note(?: down)?(?: that)?\\s+(.+)"
+            "^(?:take a |make a |add a |write a |write )?note(?: down)?(?: that)?\\s+(.+)"
         ).find(s)?.let {
             return Step.Note(it.groupValues[1])
         }
@@ -487,10 +359,7 @@ object CommandParser {
         return null
     }
 
-    private fun one(
-        p: String,
-        wa: Boolean
-    ): Step {
+    private fun one(p: String, wa: Boolean): Step {
 
         if (
             Regex(
@@ -535,39 +404,25 @@ object CommandParser {
         }
 
         if (
-            Regex(
-                "flip a coin|toss a coin"
-            ).containsMatchIn(p)
+            Regex("flip a coin|toss a coin").containsMatchIn(p)
         ) {
             return Step.Reply(
-                if ((0..1).random() == 0)
-                    "Heads"
-                else
-                    "Tails"
+                if ((0..1).random() == 0) "Heads" else "Tails"
             )
         }
 
         if (
-            Regex(
-                "roll a (?:dice|die)"
-            ).containsMatchIn(p)
+            Regex("roll a (?:dice|die)").containsMatchIn(p)
         ) {
             return Step.Reply(
                 "You rolled a ${(1..6).random()}"
             )
         }
 
-        // ---------------------------------------------------------
-        // CALCULATOR
-        // ---------------------------------------------------------
-
+        // Calculator
         Regex(
-            "^(?:calculate|what.?s|what is)?\\s*" +
-                    "(\\d+(?:\\.\\d+)?)\\s*" +
-                    "(?:percent|%)\\s*of\\s*" +
-                    "(\\d+(?:\\.\\d+)?)$"
+            "^(?:calculate|what.?s|what is)?\\s*(\\d+(?:\\.\\d+)?)\\s*(?:percent|%)\\s*of\\s*(\\d+(?:\\.\\d+)?)$"
         ).find(p)?.let {
-
             val a = it.groupValues[1].toDouble()
             val b = it.groupValues[2].toDouble()
 
@@ -577,11 +432,7 @@ object CommandParser {
         }
 
         Regex(
-            "^(?:calculate|calc|compute|what.?s|what is)?\\s*" +
-                    "(\\d+(?:\\.\\d+)?)\\s*" +
-                    "(plus|minus|times|multiplied by|x|into|" +
-                    "divided by|over|\\+|-|\\*|×|/|÷)\\s*" +
-                    "(\\d+(?:\\.\\d+)?)$"
+            "^(?:calculate|calc|compute|what.?s|what is|how much is)?\\s*(\\d+(?:\\.\\d+)?)\\s*(plus|minus|times|multiplied by|x|into|divided by|over|\\+|-|\\*|×|/|÷)\\s*(\\d+(?:\\.\\d+)?)$"
         ).find(p)?.let {
 
             val a = it.groupValues[1].toDouble()
@@ -635,10 +486,7 @@ object CommandParser {
             )
         }
 
-        // ---------------------------------------------------------
-        // MEDIA
-        // ---------------------------------------------------------
-
+        // Music
         if (
             Regex(
                 "^(?:next|skip)(?: song| track| video)?$"
@@ -671,15 +519,8 @@ object CommandParser {
             return Step.Media("play")
         }
 
-        // ---------------------------------------------------------
-        // CALL
-        // ---------------------------------------------------------
-
         Regex(
-            "^(?:whatsapp\\s+)?(?:(?:make|give|place)\\s+(?:a\\s+)?)?" +
-                    "(?:(video|voice)\\s+)?(?:call|ring|dial|phone)\\s+" +
-                    "(?:to\\s+)?(?:my\\s+)?(.+?)" +
-                    "(?:\\s+(?:on|in|using|via|through)\\s+whatsapp)?$"
+            "^(?:whatsapp\\s+)?(?:(?:make|give|place)\\s+(?:a\\s+)?)?(?:(video|voice)\\s+)?(?:call|ring|dial|phone)\\s+(?:to\\s+)?(?:my\\s+)?(.+?)(?:\\s+(?:on|in|using|via|through)\\s+whatsapp)?$"
         ).find(p)?.let {
 
             val video =
@@ -689,50 +530,30 @@ object CommandParser {
                 it.groupValues[2],
                 video,
                 wa ||
-                        video ||
-                        p.contains("whatsapp")
+                    video ||
+                    p.contains("whatsapp")
             )
         }
 
-        // ---------------------------------------------------------
-        // SMS
-        // ---------------------------------------------------------
-
         Regex(
-            "^(?:send\\s+)?(?:a\\s+)?" +
-                    "(?:sms|text|message|msg)\\s+" +
-                    "(?:to\\s+)?(?:my\\s+)?(.+?)\\s+" +
-                    "(?:saying|that says|say)\\s+(.+)"
+            "^(?:send\\s+)?(?:a\\s+)?(?:sms|text|message|msg)\\s+(?:to\\s+)?(?:my\\s+)?(.+?)\\s+(?:saying|that says|say)\\s+(.+)"
         ).find(p)?.let {
-
             return Step.Sms(
                 it.groupValues[1],
                 it.groupValues[2]
             )
         }
 
-        // ---------------------------------------------------------
-        // OPEN APP
-        // ---------------------------------------------------------
-
         Regex(
-            "^(?:open|launch|start|run|load)\\s+" +
-                    "(?:the\\s+)?(.+)"
+            "^(?:open|launch|start|run|load)\\s+(?:the\\s+)?(.+)"
         ).find(p)?.let {
-            return Step.OpenApp(
-                it.groupValues[1]
-            )
+            return Step.OpenApp(it.groupValues[1])
         }
 
-        // ---------------------------------------------------------
-        // REMINDERS / TIMER
-        // ---------------------------------------------------------
-
+        // Time tools
         Regex(
-            "remind me (?:to\\s+)?(.+?)\\s+in\\s+" +
-                    "(\\d+)\\s*(second|sec|minute|min|hour|hr)"
+            "remind me (?:to\\s+)?(.+?)\\s+in\\s+(\\d+)\\s*(second|sec|minute|min|hour|hr)"
         ).find(p)?.let {
-
             return Step.Remind(
                 it.groupValues[1],
                 secs(
@@ -743,11 +564,8 @@ object CommandParser {
         }
 
         Regex(
-            "remind me in\\s+(\\d+)\\s*" +
-                    "(second|sec|minute|min|hour|hr)\\w*\\s+" +
-                    "to\\s+(.+)"
+            "remind me in\\s+(\\d+)\\s*(second|sec|minute|min|hour|hr)\\w*\\s+to\\s+(.+)"
         ).find(p)?.let {
-
             return Step.Remind(
                 it.groupValues[3],
                 secs(
@@ -758,10 +576,8 @@ object CommandParser {
         }
 
         Regex(
-            "(?:timer|countdown).*?" +
-                    "(\\d+)\\s*(second|sec|minute|min|hour|hr)"
+            "(?:timer|countdown).*?(\\d+)\\s*(second|sec|minute|min|hour|hr)"
         ).find(p)?.let {
-
             return Step.Timer(
                 secs(
                     it.groupValues[1].toInt(),
@@ -773,7 +589,6 @@ object CommandParser {
         Regex(
             "(\\d+)\\s*(second|sec|minute|min|hour|hr)\\w*\\s+timer"
         ).find(p)?.let {
-
             return Step.Timer(
                 secs(
                     it.groupValues[1].toInt(),
@@ -782,38 +597,22 @@ object CommandParser {
             )
         }
 
-        // ---------------------------------------------------------
-        // ALARM
-        // ---------------------------------------------------------
-
         Regex(
-            "(?:alarm|wake me up)\\s+" +
-                    "(?:for\\s+|at\\s+)?" +
-                    "(\\d{1,2})(?::(\\d{2}))?\\s*" +
-                    "(a\\.?m\\.?|p\\.?m\\.?)?"
+            "(?:alarm|wake me up)\\s+(?:for\\s+|at\\s+)?(\\d{1,2})(?::(\\d{2}))?\\s*(a\\.?m\\.?|p\\.?m\\.?)?"
         ).find(p)?.let {
 
-            var h =
-                it.groupValues[1].toInt()
+            var h = it.groupValues[1].toInt()
 
             val m =
-                it.groupValues[2].toIntOrNull()
-                    ?: 0
+                it.groupValues[2].toIntOrNull() ?: 0
 
-            val ap =
-                it.groupValues[3]
+            val ap = it.groupValues[3]
 
-            if (
-                ap.startsWith("p") &&
-                h < 12
-            ) {
+            if (ap.startsWith("p") && h < 12) {
                 h += 12
             }
 
-            if (
-                ap.startsWith("a") &&
-                h == 12
-            ) {
+            if (ap.startsWith("a") && h == 12) {
                 h = 0
             }
 
@@ -823,25 +622,13 @@ object CommandParser {
             )
         }
 
-        // ---------------------------------------------------------
-        // CALENDAR EVENT
-        // ---------------------------------------------------------
-
         Regex(
-            "^(?:schedule|add event|add meeting|create event|add appointment)\\s+" +
-                    "(.+?)\\s+(?:on\\s+)?" +
-                    "(today|tomorrow)?\\s*at\\s+" +
-                    "(\\d{1,2})(?::(\\d{2}))?\\s*" +
-                    "(a\\.?m\\.?|p\\.?m\\.?)?$"
+            "^(?:schedule|add event|add meeting|create event|add appointment)\\s+(.+?)\\s+(?:on\\s+)?(today|tomorrow)?\\s*at\\s+(\\d{1,2})(?::(\\d{2}))?\\s*(a\\.?m\\.?|p\\.?m\\.?)?$"
         ).find(p)?.let {
 
-            val cal =
-                Calendar.getInstance()
+            val cal = Calendar.getInstance()
 
-            if (
-                it.groupValues[2] ==
-                "tomorrow"
-            ) {
+            if (it.groupValues[2] == "tomorrow") {
                 cal.add(
                     Calendar.DAY_OF_YEAR,
                     1
@@ -851,20 +638,13 @@ object CommandParser {
             var h =
                 it.groupValues[3].toInt()
 
-            val ap =
-                it.groupValues[5]
+            val ap = it.groupValues[5]
 
-            if (
-                ap.startsWith("p") &&
-                h < 12
-            ) {
+            if (ap.startsWith("p") && h < 12) {
                 h += 12
             }
 
-            if (
-                ap.startsWith("a") &&
-                h == 12
-            ) {
+            if (ap.startsWith("a") && h == 12) {
                 h = 0
             }
 
@@ -875,9 +655,7 @@ object CommandParser {
 
             cal.set(
                 Calendar.MINUTE,
-                it.groupValues[4]
-                    .toIntOrNull()
-                    ?: 0
+                it.groupValues[4].toIntOrNull() ?: 0
             )
 
             cal.set(
@@ -887,8 +665,7 @@ object CommandParser {
 
             if (
                 it.groupValues[2].isEmpty() &&
-                cal.timeInMillis <
-                System.currentTimeMillis()
+                cal.timeInMillis < System.currentTimeMillis()
             ) {
                 cal.add(
                     Calendar.DAY_OF_YEAR,
@@ -902,22 +679,13 @@ object CommandParser {
             )
         }
 
-        // ---------------------------------------------------------
-        // PHONE CONTROLS
-        // ---------------------------------------------------------
-
+        // Phone controls
         val devices =
-            "wifi|wi-fi|bluetooth|data|network|" +
-                    "airplane(?: mode)?|flight mode|" +
-                    "location|gps|nfc|flash\\s?light|torch"
+            "wifi|wi-fi|bluetooth|data|network|airplane(?: mode)?|flight mode|location|gps|nfc|flash\\\\s?light|torch"
 
         Regex(
-            "turn\\s+(on|off)\\s+" +
-                    "(?:the\\s+)?" +
-                    "(?:mobile\\s+)?" +
-                    "($devices)"
+            "turn\\s+(on|off)\\s+(?:the\\s+)?(?:mobile\\s+)?($devices)"
         ).find(p)?.let {
-
             return Step.Toggle(
                 it.groupValues[2],
                 it.groupValues[1] == "on"
@@ -925,27 +693,19 @@ object CommandParser {
         }
 
         Regex(
-            "turn\\s+(?:the\\s+)?" +
-                    "(?:mobile\\s+)?" +
-                    "($devices)\\s+(on|off)"
+            "turn\\s+(?:the\\s+)?(?:mobile\\s+)?($devices)\\s+(on|off)"
         ).find(p)?.let {
-
             return Step.Toggle(
                 it.groupValues[1],
                 it.groupValues[2] == "on"
             )
         }
 
-        // ---------------------------------------------------------
-        // VOLUME
-        // ---------------------------------------------------------
-
         if (
             Regex(
                 "\\b(?:volume|louder|quieter)\\b"
             ).containsMatchIn(p)
         ) {
-
             val up =
                 Regex(
                     "\\b(?:up|louder|increase|raise|more|high)\\b"
@@ -961,28 +721,18 @@ object CommandParser {
             }
         }
 
-        // ---------------------------------------------------------
-        // PHOTO
-        // ---------------------------------------------------------
-
         if (
             Regex(
-                "take\\s+(?:a\\s+)?" +
-                        "(?:photo|picture|pic|selfie)"
+                "take\\s+(?:a\\s+)?(?:photo|picture|pic|selfie)"
             ).containsMatchIn(p)
         ) {
             return Step.Photo
         }
 
-        // ---------------------------------------------------------
-        // SEARCH
-        // ---------------------------------------------------------
-
+        // Search, maps, info
         Regex(
-            "^(?:search|play|watch|find)\\s+" +
-                    "(.+?)\\s+on\\s+youtube"
+            "^(?:search|play|watch|find)\\s+(.+?)\\s+on\\s+youtube"
         ).find(p)?.let {
-
             return Step.Search(
                 it.groupValues[1],
                 true
@@ -992,7 +742,6 @@ object CommandParser {
         Regex(
             "^(?:play|watch)\\s+(.+)"
         ).find(p)?.let {
-
             return Step.Search(
                 it.groupValues[1],
                 true
@@ -1000,38 +749,25 @@ object CommandParser {
         }
 
         Regex(
-            "^(?:search|google|look up|find)\\s+" +
-                    "(?:for\\s+)?(.+)"
+            "^(?:search|google|look up|find)\\s+(?:for\\s+)?(.+)"
         ).find(p)?.let {
-
             return Step.Search(
                 it.groupValues[1],
                 false
             )
         }
 
-        // ---------------------------------------------------------
-        // NAVIGATION
-        // ---------------------------------------------------------
-
         Regex(
-            "^(?:navigate to|directions to|take me to|" +
-                    "route to|go to)\\s+(.+)"
+            "^(?:navigate to|directions to|take me to|route to|go to)\\s+(.+)"
         ).find(p)?.let {
-
             return Step.Navigate(
                 it.groupValues[1]
             )
         }
 
-        // ---------------------------------------------------------
-        // INFORMATION
-        // ---------------------------------------------------------
-
         if (
             Regex(
-                "am i online|am i offline|do i have internet|" +
-                        "internet (?:on|connected|working)|network status"
+                "am i online|am i offline|do i have internet|internet (?:on|connected|working)|network status"
             ).containsMatchIn(p)
         ) {
             return Step.Info("net")
@@ -1039,8 +775,7 @@ object CommandParser {
 
         if (
             Regex(
-                "what.?s the time|what time|time now|" +
-                        "current time|the time"
+                "what.?s the time|what time|time now|current time|the time"
             ).containsMatchIn(p)
         ) {
             return Step.Info("time")
@@ -1058,14 +793,10 @@ object CommandParser {
             return Step.Info("battery")
         }
 
-        // ---------------------------------------------------------
-        // NOTES
-        // ---------------------------------------------------------
-
+        // Notes and list
         if (
             Regex(
-                "(?:clear|delete|erase)\\s+" +
-                        "(?:all\\s+)?(?:my\\s+)?notes"
+                "(?:clear|delete|erase)\\s+(?:all\\s+)?(?:my\\s+)?notes"
             ).containsMatchIn(p)
         ) {
             return Step.ClearNotes
@@ -1073,23 +804,15 @@ object CommandParser {
 
         if (
             Regex(
-                "(?:read|show|what.?s|what are|list)\\s+" +
-                        "(?:my\\s+)?notes"
+                "(?:read|show|what.?s|what are|list)\\s+(?:my\\s+)?notes"
             ).containsMatchIn(p)
         ) {
             return Step.ReadNotes
         }
 
-        // ---------------------------------------------------------
-        // TODO
-        // ---------------------------------------------------------
-
         Regex(
-            "^(?:remove|delete)\\s+(.+?)\\s+" +
-                    "from\\s+(?:my\\s+)?" +
-                    "(?:to-?\\s?do\\s+)?list"
+            "^(?:remove|delete)\\s+(.+?)\\s+from\\s+(?:my\\s+)?(?:to-?\\s?do\\s+)?list"
         ).find(p)?.let {
-
             return Step.RemoveTodo(
                 it.groupValues[1]
             )
@@ -1097,20 +820,15 @@ object CommandParser {
 
         if (
             Regex(
-                "(?:clear|empty|delete)\\s+" +
-                        "(?:my\\s+)?(?:to-?\\s?do\\s+)?list"
+                "(?:clear|empty|delete)\\s+(?:my\\s+)?(?:to-?\\s?do\\s+)?list"
             ).containsMatchIn(p)
         ) {
             return Step.ClearTodos
         }
 
         Regex(
-            "^(?:add|put)\\s+(.+?)\\s+" +
-                    "(?:to|in|on)\\s+" +
-                    "(?:my\\s+)?" +
-                    "(?:to-?\\s?do\\s+)?list"
+            "^(?:add|put)\\s+(.+?)\\s+(?:to|in|on)\\s+(?:my\\s+)?(?:to-?\\s?do\\s+)?list"
         ).find(p)?.let {
-
             return Step.AddTodo(
                 it.groupValues[1]
             )
@@ -1118,21 +836,16 @@ object CommandParser {
 
         if (
             Regex(
-                "(?:read|show|what.?s(?:\\s+on)?|list)\\s+" +
-                        "(?:my\\s+)?(?:to-?\\s?do\\s+)?list"
+                "(?:read|show|what.?s(?:\\s+on)?|list)\\s+(?:my\\s+)?(?:to-?\\s?do\\s+)?list"
             ).containsMatchIn(p)
         ) {
             return Step.ReadTodos
         }
 
-        // ---------------------------------------------------------
-        // FACTS / SECRETS
-        // ---------------------------------------------------------
-
+        // Facts and secrets
         Regex(
             "^copy\\s+(my\\s+.+)"
         ).find(p)?.let {
-
             return Step.Copy(
                 it.groupValues[1]
             )
@@ -1141,17 +854,14 @@ object CommandParser {
         Regex(
             "^forget\\s+(?:about\\s+)?(.+)"
         ).find(p)?.let {
-
             return Step.Forget(
                 it.groupValues[1]
             )
         }
 
         Regex(
-            "^(?:what.?s|what is|what are|tell me|show me|show|read out|read)\\s+" +
-                    "(my\\s+.+)"
+            "^(?:what.?s|what is|what are|tell me|show me|show|read out|read)\\s+(my\\s+.+)"
         ).find(p)?.let {
-
             return Step.Recall(
                 it.groupValues[1]
             )
@@ -1183,29 +893,11 @@ class StepRunner(
 
     private val noSlang =
         Regex(
-            "^(?:when i say|if i say|whenever i say|forget|" +
-                    "nickname|set nickname|give nickname|add nickname|" +
-                    "another nickname|that means|it means|this means|" +
-                    "i meant|ignore)"
+            "^(?:when i say|if i say|whenever i say|forget|nickname|set nickname|give nickname|add nickname|another nickname|that means|it means|this means|i meant|ignore)"
         )
 
     private var lastCommand = ""
-
     private var lastUnknown = ""
-
-    // ---------------------------------------------------------
-    // CONVERSATION CONTEXT
-    // ---------------------------------------------------------
-
-    private var lastApp = ""
-
-    private var lastSearch = ""
-
-    private var lastContact = ""
-
-    private var lastPlace = ""
-
-    private var lastTopic = ""
 
     private data class Contact(
         val id: Long,
@@ -1217,377 +909,117 @@ class StepRunner(
         Brain.setup(ctx)
     }
 
-    // ---------------------------------------------------------
-    // REMEMBER CONTEXT
-    // ---------------------------------------------------------
+    // Learned slang first, then normal parsing.
+    private fun plan(raw: String): List<Step> {
 
-    private fun rememberContext(step: Step) {
+        val t = Brain.clean(raw)
 
-        when (step) {
+        val slang = Brain.map("slang")
 
-            is Step.OpenApp -> {
-                lastApp = step.name
-                lastTopic = step.name
-            }
-
-            is Step.Search -> {
-                lastSearch = step.q
-                lastTopic = step.q
-            }
-
-            is Step.Call -> {
-                lastContact = step.contact
-                lastTopic = step.contact
-            }
-
-            is Step.Sms -> {
-                lastContact = step.contact
-                lastTopic = step.contact
-            }
-
-            is Step.Navigate -> {
-                lastPlace = step.place
-                lastTopic = step.place
-            }
-
-            is Step.Note -> {
-                lastTopic = step.text
-            }
-
-            is Step.AddTodo -> {
-                lastTopic = step.text
-            }
-
-            else -> {
-                // Keep previous context.
-            }
-        }
-    }
-
-    // ---------------------------------------------------------
-    // CONTEXT FOLLOW-UP COMMANDS
-    // ---------------------------------------------------------
-
-    private fun applyContext(
-        command: String
-    ): String {
-
-        var text =
-            command.trim()
-
-        if (text.isEmpty()) {
-            return text
-        }
-
-        // "open it"
-        if (
-            Regex(
-                "^(?:open|launch|start)\\s+(?:it|that|this)$"
-            ).matches(text)
-        ) {
-
-            if (lastApp.isNotEmpty()) {
-                return "open $lastApp"
-            }
-        }
-
-        // "search for that"
-        if (
-            Regex(
-                "^(?:search|google|look up)\\s+" +
-                        "(?:it|that|this)$"
-            ).matches(text)
-        ) {
-
-            if (lastTopic.isNotEmpty()) {
-                return "search $lastTopic"
-            }
-        }
-
-        // "play it"
-        if (
-            Regex(
-                "^(?:play|watch)\\s+(?:it|that|this)$"
-            ).matches(text)
-        ) {
-
-            if (lastSearch.isNotEmpty()) {
-                return "play $lastSearch"
-            }
-        }
-
-        // "play the first one"
-        if (
-            Regex(
-                "^(?:play|watch)\\s+" +
-                        "(?:the\\s+)?" +
-                        "(?:first|top|first\\s+result)" +
-                        "(?:\\s+(?:one|result))?$"
-            ).matches(text)
-        ) {
-
-            if (lastSearch.isNotEmpty()) {
-                return "play $lastSearch"
-            }
-        }
-
-        // "play the second one"
-        if (
-            Regex(
-                "^(?:play|watch)\\s+" +
-                        "(?:the\\s+)?second" +
-                        "(?:\\s+(?:one|result))?$"
-            ).matches(text)
-        ) {
-
-            if (lastSearch.isNotEmpty()) {
-                return "play $lastSearch"
-            }
-        }
-
-        // "call him"
-        if (
-            Regex(
-                "^(?:call|ring|phone)\\s+" +
-                        "(?:him|her|them)$"
-            ).matches(text)
-        ) {
-
-            if (lastContact.isNotEmpty()) {
-                return "call $lastContact"
-            }
-        }
-
-        // "message him hello"
-        Regex(
-            "^(?:message|text|sms)\\s+" +
-                    "(?:him|her|them)\\s+(.+)$"
-        ).find(text)?.let {
-
-            if (lastContact.isNotEmpty()) {
-
-                return "message $lastContact " +
-                        "saying ${it.groupValues[1]}"
-            }
-        }
-
-        // "navigate there"
-        if (
-            Regex(
-                "^(?:navigate|go|take me)\\s+" +
-                        "(?:there|to that place)$"
-            ).matches(text)
-        ) {
-
-            if (lastPlace.isNotEmpty()) {
-                return "navigate to $lastPlace"
-            }
-        }
-
-        // "open the same app"
-        if (
-            Regex(
-                "^(?:open|launch)\\s+" +
-                        "(?:the\\s+)?same\\s+(?:app)?$"
-            ).matches(text)
-        ) {
-
-            if (lastApp.isNotEmpty()) {
-                return "open $lastApp"
-            }
-        }
-
-        // "search the same thing"
-        if (
-            Regex(
-                "^(?:search|google)\\s+" +
-                        "(?:the\\s+)?same\\s+(?:thing|topic)?$"
-            ).matches(text)
-        ) {
-
-            if (lastSearch.isNotEmpty()) {
-                return "search $lastSearch"
-            }
-
-            if (lastTopic.isNotEmpty()) {
-                return "search $lastTopic"
-            }
-        }
-
-        return text
-    }
-
-    // ---------------------------------------------------------
-    // COMMAND PLANNING
-    // ---------------------------------------------------------
-
-    private fun plan(
-        raw: String
-    ): List<Step> {
-
-        val original =
-            Brain.clean(raw)
-
-        if (original.isEmpty()) {
-            return emptyList()
-        }
-
-        // -----------------------------------------------------
-        // 1. LEARNED SLANG
-        // -----------------------------------------------------
-
-        val slang =
-            Brain.map("slang")
-
-        val slangHit =
-            if (noSlang.containsMatchIn(original)) {
-
+        val hit =
+            if (noSlang.containsMatchIn(t)) {
                 null
-
             } else {
-
                 slang.keys
                     .filter {
                         it.isNotEmpty() &&
-                                Regex(
-                                    "\\b" +
-                                            Regex.escape(it) +
-                                            "\\b"
-                                ).containsMatchIn(original)
+                            Regex(
+                                "\\b" +
+                                    Regex.escape(it) +
+                                    "\\b"
+                            ).containsMatchIn(t)
                     }
-                    .maxByOrNull {
-                        it.length
-                    }
+                    .maxByOrNull { it.length }
             }
-
-        val learnedCommand =
-            if (slangHit != null) {
-                slang[slangHit] ?: original
-            } else {
-                original
-            }
-
-        // -----------------------------------------------------
-        // 2. CONTEXT
-        // -----------------------------------------------------
-
-        val contextualCommand =
-            applyContext(
-                learnedCommand
-            )
-
-        // -----------------------------------------------------
-        // 3. NATURAL LANGUAGE ENGINE
-        // -----------------------------------------------------
-
-        val candidates =
-            IntentEngine.alternatives(
-                contextualCommand
-            )
-
-        // -----------------------------------------------------
-        // 4. TRY NATURAL LANGUAGE INTERPRETATIONS
-        // -----------------------------------------------------
-
-        for (candidate in candidates) {
-
-            val parsed =
-                CommandParser.parse(candidate)
-
-            if (
-                parsed.isNotEmpty() &&
-                        parsed.none {
-                            it is Step.Unknown
-                        }
-            ) {
-                return parsed
-            }
-        }
-
-        // -----------------------------------------------------
-        // 5. FALLBACK TO ORIGINAL PARSER
-        // -----------------------------------------------------
 
         return CommandParser.parse(
-            contextualCommand
+            if (hit != null) {
+                slang[hit] ?: raw
+            } else {
+                raw
+            }
         )
     }
 
-    // ---------------------------------------------------------
-    // UNDERSTANDS
-    // ---------------------------------------------------------
-
+    // True if the normal command parser understands the command
+    // OR the offline AI brain can answer it.
     fun understands(raw: String): Boolean {
 
-        val steps = plan(raw)
+        val p = plan(raw)
 
-    // Normal command understood.
         if (
-            steps.isNotEmpty() &&
-            steps.none { it is Step.Unknown }
-    ) {
+            p.isNotEmpty() &&
+            p.none { it is Step.Unknown }
+        ) {
             return true
+        }
+
+        return AIBrain.answer(raw) != null
     }
 
-    // Offline AI Brain understood the question.
-        return AIBrain.answer(raw) != null
-} 
-
-    // ---------------------------------------------------------
-    // HANDLE
-    // ---------------------------------------------------------
-
-    fun handle(raw: String) {
+    // Returns how many normal command steps will run.
+    // If the normal parser cannot understand the command,
+    // the offline AI brain gets a chance to answer it.
+    fun handle(raw: String): Int {
 
         val steps = plan(raw)
-    
+
         // ---------------------------------------------------------
-        // 1. Normal Sanya command
+        // Normal Sanya command
         // ---------------------------------------------------------
-    
+
         if (
             steps.isNotEmpty() &&
             steps.none { it is Step.Unknown }
         ) {
-    
-            steps.forEachIndexed { i, step ->
-    
-                rememberContext(step)
-    
+
+            if (
+                steps.none {
+                    it is Step.Again ||
+                        it is Step.Mean ||
+                        it is Step.Teach
+                }
+            ) {
+                lastCommand = raw
+            }
+
+            steps.forEachIndexed { i, s ->
                 ui.postDelayed(
                     {
-                        exec(step)
+                        exec(s)
                     },
                     i * 2500L
                 )
             }
-    
-            return
+
+            return steps.size
         }
-    
+
         // ---------------------------------------------------------
-        // 2. Offline AI Brain
+        // Offline AI Brain
         // ---------------------------------------------------------
-    
-        val aiAnswer = AIBrain.answer(raw)
-    
+
+        val aiAnswer =
+            AIBrain.answer(raw)
+
         if (aiAnswer != null) {
-    
-            speak(aiAnswer)
-    
-            return
+            say(aiAnswer)
+            return 1
         }
-    
+
         // ---------------------------------------------------------
-        // 3. Completely unknown command
+        // Completely unknown command
         // ---------------------------------------------------------
-    
-        lastUnknown = raw
-    
-        speak(
-            "Sorry, I don't understand that yet."
+
+        lastUnknown = Brain.clean(raw)
+
+        say(
+            "I didn't get that. Say 'that means' and what I should do, and I'll learn it."
         )
+
+        return 0
     }
+
     private fun name() =
         Brain.setting(
             "name",
@@ -1597,31 +1029,22 @@ class StepRunner(
                 ""
             } else {
                 " " +
-                        it.replaceFirstChar {
-                            c ->
-                            c.uppercase()
-                        }
+                    it.replaceFirstChar {
+                        c -> c.uppercase()
+                    }
             }
         }
 
-    private fun now(
-        f: String
-    ) =
+    private fun now(f: String) =
         SimpleDateFormat(
             f,
             Locale.getDefault()
         ).format(Date())
 
-    private fun fk(
-        x: String
-    ) =
+    private fun fk(x: String) =
         Brain.clean(x)
             .removePrefix("my ")
             .removePrefix("the ")
-
-    // ---------------------------------------------------------
-    // INTERNET
-    // ---------------------------------------------------------
 
     private fun online(): Boolean {
 
@@ -1633,21 +1056,14 @@ class StepRunner(
         val caps =
             cm.getNetworkCapabilities(
                 cm.activeNetwork
-            )
-                ?: return false
+            ) ?: return false
 
         return caps.hasCapability(
             NetworkCapabilities.NET_CAPABILITY_INTERNET
         )
     }
 
-    // ---------------------------------------------------------
-    // EXECUTE
-    // ---------------------------------------------------------
-
-    private fun exec(
-        s: Step
-    ) {
+    private fun exec(s: Step) {
 
         when (s) {
 
@@ -1660,9 +1076,7 @@ class StepRunner(
             is Step.Sms -> {
 
                 val c =
-                    findContact(
-                        s.contact
-                    )
+                    findContact(s.contact)
                         ?: return say(
                             "I can't find ${s.contact} in your contacts"
                         )
@@ -1672,7 +1086,7 @@ class StepRunner(
                         Intent.ACTION_SENDTO,
                         Uri.parse(
                             "smsto:" +
-                                    Uri.encode(c.number)
+                                Uri.encode(c.number)
                         )
                     ).putExtra(
                         "sms_body",
@@ -1725,8 +1139,7 @@ class StepRunner(
                 )
 
                 say(
-                    "Alarm set for " +
-                            "${s.hour}:${"%02d".format(s.min)}"
+                    "Alarm set for ${s.hour}:${"%02d".format(s.min)}"
                 )
             }
 
@@ -1795,20 +1208,17 @@ class StepRunner(
 
                     am.adjustStreamVolume(
                         AudioManager.STREAM_MUSIC,
-                        if (s.up)
+                        if (s.up) {
                             AudioManager.ADJUST_RAISE
-                        else
-                            AudioManager.ADJUST_LOWER,
+                        } else {
+                            AudioManager.ADJUST_LOWER
+                        },
                         AudioManager.FLAG_SHOW_UI
                     )
                 }
 
                 say(
-                    "Volume " +
-                            if (s.up)
-                                "up"
-                            else
-                                "down"
+                    "Volume ${if (s.up) "up" else "down"}"
                 )
             }
 
@@ -1816,7 +1226,6 @@ class StepRunner(
 
                 val code =
                     when (s.key) {
-
                         "next" ->
                             KeyEvent.KEYCODE_MEDIA_NEXT
 
@@ -1881,7 +1290,7 @@ class StepRunner(
                         Intent.ACTION_VIEW,
                         Uri.parse(
                             base +
-                                    Uri.encode(s.q)
+                                Uri.encode(s.q)
                         )
                     )
                 )
@@ -1898,7 +1307,7 @@ class StepRunner(
                         Intent.ACTION_VIEW,
                         Uri.parse(
                             "google.navigation:q=" +
-                                    Uri.encode(s.place)
+                                Uri.encode(s.place)
                         )
                     )
                 )
@@ -1915,11 +1324,11 @@ class StepRunner(
 
                         "time" ->
                             "It's " +
-                                    now("h:mm a")
+                                now("h:mm a")
 
                         "date" ->
                             "Today is " +
-                                    now("EEEE, d MMMM")
+                                now("EEEE, d MMMM")
 
                         "net" ->
                             if (online()) {
@@ -1935,11 +1344,11 @@ class StepRunner(
                                     Context.BATTERY_SERVICE
                                 ) as BatteryManager
 
-                            "Battery is " +
-                                    bm.getIntProperty(
-                                        BatteryManager.BATTERY_PROPERTY_CAPACITY
-                                    ) +
-                                    " percent"
+                            "Battery is ${
+                                bm.getIntProperty(
+                                    BatteryManager.BATTERY_PROPERTY_CAPACITY
+                                )
+                            } percent"
                         }
                     }
                 )
@@ -1981,16 +1390,13 @@ class StepRunner(
             Step.ReadTodos -> {
 
                 say(
-                    Brain.items("todo")
-                        .let {
-                            if (it.isEmpty()) {
-                                "Your list is empty"
-                            } else {
-                                it.joinToString(
-                                    ", "
-                                )
-                            }
+                    Brain.items("todo").let {
+                        if (it.isEmpty()) {
+                            "Your list is empty"
+                        } else {
+                            it.joinToString(", ")
                         }
+                    }
                 )
             }
 
@@ -2019,19 +1425,12 @@ class StepRunner(
                     Brain.items("note").let { l ->
 
                         if (l.isEmpty()) {
-
                             "You have no notes"
-
                         } else {
-
                             "You have ${l.size} notes. " +
-                                    l.mapIndexed {
-                                            i,
-                                            n ->
-                                        "${i + 1}, $n"
-                                    }.joinToString(
-                                        ". "
-                                    )
+                                l.mapIndexed { i, n ->
+                                    "${i + 1}, $n"
+                                }.joinToString(". ")
                         }
                     }
                 )
@@ -2042,8 +1441,7 @@ class StepRunner(
                 val real =
                     Brain.map("nick")[
                         Brain.clean(s.real)
-                    ]
-                        ?: s.real
+                    ] ?: s.real
 
                 s.nicks.forEach {
                     Brain.link(
@@ -2061,7 +1459,6 @@ class StepRunner(
             is Step.Teach -> {
 
                 s.phrases.forEach {
-
                     Brain.link(
                         "slang",
                         it,
@@ -2070,8 +1467,7 @@ class StepRunner(
                 }
 
                 say(
-                    "Got it. When you say " +
-                            "${s.phrases.first()}, I'll ${s.cmd}"
+                    "Got it. When you say ${s.phrases.first()}, I'll ${s.cmd}"
                 )
             }
 
@@ -2106,7 +1502,6 @@ class StepRunner(
                     lastUnknown
 
                 if (phrase.isEmpty()) {
-
                     return say(
                         "I have nothing to learn from yet"
                     )
@@ -2175,18 +1570,17 @@ class StepRunner(
                     fk(s.key)
 
                 if (k == "name") {
-
                     return say(
-                        "Your name is " +
-                                Brain.setting(
-                                    "name",
-                                    "not set yet"
-                                )
+                        "Your name is ${
+                            Brain.setting(
+                                "name",
+                                "not set yet"
+                            )
+                        }"
                     )
                 }
 
                 Brain.map("fact")[k]?.let {
-
                     return say(
                         "${s.key} is $it"
                     )
@@ -2196,10 +1590,9 @@ class StepRunner(
                     prefs.getString(
                         "secret:$k",
                         null
+                    ) ?: return say(
+                        "I don't remember ${s.key}"
                     )
-                        ?: return say(
-                            "I don't remember ${s.key}"
-                        )
 
                 val text =
                     runCatching {
@@ -2227,18 +1620,14 @@ class StepRunner(
 
                 val text =
                     if (sec != null) {
-
                         runCatching {
                             Vault.dec(sec)
                         }.getOrNull()
-
                     } else {
-
                         Brain.map("fact")[k]
                     }
 
                 if (text == null) {
-
                     return say(
                         "I don't have ${s.key}"
                     )
@@ -2251,7 +1640,6 @@ class StepRunner(
                     )
 
                 if (sec != null) {
-
                     runCatching {
 
                         clip.description.extras =
@@ -2265,15 +1653,12 @@ class StepRunner(
                 }
 
                 (
-                        ctx.getSystemService(
-                            Context.CLIPBOARD_SERVICE
-                        ) as ClipboardManager
-                        )
-                    .setPrimaryClip(clip)
+                    ctx.getSystemService(
+                        Context.CLIPBOARD_SERVICE
+                    ) as ClipboardManager
+                ).setPrimaryClip(clip)
 
-                say(
-                    "Copied"
-                )
+                say("Copied")
             }
 
             is Step.Forget -> {
@@ -2283,20 +1668,14 @@ class StepRunner(
 
                 val removed =
                     Brain.unlink(s.key) ||
-                            Brain.unlink(k) ||
-                            prefs.contains(
-                                "secret:$k"
-                            ).also {
-
-                                if (it) {
-
-                                    prefs.edit()
-                                        .remove(
-                                            "secret:$k"
-                                        )
-                                        .apply()
-                                }
+                        Brain.unlink(k) ||
+                        prefs.contains("secret:$k").also {
+                            if (it) {
+                                prefs.edit()
+                                    .remove("secret:$k")
+                                    .apply()
                             }
+                        }
 
                 say(
                     if (removed) {
@@ -2345,28 +1724,28 @@ class StepRunner(
 
                 val tail =
                     if (todo.isEmpty()) {
-
                         "Your list is empty."
-
                     } else {
-
                         "You have ${todo.size} things on your list: " +
-                                todo.joinToString(", ") +
-                                "."
+                            todo.joinToString(", ") +
+                            "."
                     }
 
                 say(
                     "$greet${name()}. " +
-                            "It's ${now("h:mm a")}, " +
-                            "${now("EEEE, d MMMM")}. " +
-                            "Battery " +
-                            "${bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)} percent. " +
-                            tail +
-                            if (online()) {
-                                ""
-                            } else {
-                                " You're offline."
-                            }
+                        "It's ${now("h:mm a")}, " +
+                        "${now("EEEE, d MMMM")}. " +
+                        "Battery ${
+                            bm.getIntProperty(
+                                BatteryManager.BATTERY_PROPERTY_CAPACITY
+                            )
+                        } percent. " +
+                        tail +
+                        if (online()) {
+                            ""
+                        } else {
+                            " You're offline."
+                        }
                 )
             }
 
@@ -2374,11 +1753,11 @@ class StepRunner(
 
                 say(
                     "I know " +
-                            "${Brain.map("nick").size} nicknames, " +
-                            "${Brain.map("slang").size} slang phrases, " +
-                            "${Brain.map("word").size} word meanings and " +
-                            "${Brain.map("fact").size} facts. " +
-                            "Say show my brain to edit them."
+                        "${Brain.map("nick").size} nicknames, " +
+                        "${Brain.map("slang").size} slang phrases, " +
+                        "${Brain.map("word").size} word meanings and " +
+                        "${Brain.map("fact").size} facts. " +
+                        "Say show my brain to edit them."
                 )
             }
 
@@ -2399,13 +1778,10 @@ class StepRunner(
             Step.Again -> {
 
                 if (lastCommand.isEmpty()) {
-
                     say(
                         "There's nothing to repeat yet"
                     )
-
                 } else {
-
                     handle(lastCommand)
                 }
             }
@@ -2433,54 +1809,37 @@ class StepRunner(
             is Step.Unknown -> {
 
                 say(
-                    "I didn't get that. " +
-                            "You can teach me by saying " +
-                            "\"when I say this, do that\"."
+                    "I didn't get that. Say 'that means' and what I should do, and I'll learn it."
                 )
             }
         }
     }
 
-    // ---------------------------------------------------------
-    // START ACTIVITY
-    // ---------------------------------------------------------
-
-    private fun go(
-        i: Intent
-    ) {
+    private fun go(i: Intent) {
 
         runCatching {
-
             ctx.startActivity(
                 i.addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK
                 )
             )
-
         }.onFailure {
-
             say(
                 "That didn't open"
             )
         }
     }
 
-    // ---------------------------------------------------------
-    // FUZZY MATCHING
-    // ---------------------------------------------------------
+    // ---------- fuzzy matching ----------
 
-    private fun norm(
-        x: String
-    ) =
+    private fun norm(x: String) =
         x.lowercase()
             .replace(
                 Regex("[^a-z0-9]"),
                 ""
             )
 
-    private fun resolve(
-        x: String
-    ) =
+    private fun resolve(x: String) =
         Brain.map("nick")[
             Brain.clean(x)
         ] ?: x
@@ -2491,12 +1850,8 @@ class StepRunner(
     ): Int {
 
         val d =
-            Array(
-                a.length + 1
-            ) {
-                IntArray(
-                    b.length + 1
-                )
+            Array(a.length + 1) {
+                IntArray(b.length + 1)
             }
 
         for (i in 0..a.length) {
@@ -2508,7 +1863,6 @@ class StepRunner(
         }
 
         for (i in 1..a.length) {
-
             for (j in 1..b.length) {
 
                 d[i][j] =
@@ -2516,23 +1870,19 @@ class StepRunner(
                         d[i - 1][j] + 1,
                         d[i][j - 1] + 1,
                         d[i - 1][j - 1] +
-                                if (
-                                    a[i - 1] ==
-                                    b[j - 1]
-                                ) {
-                                    0
-                                } else {
-                                    1
-                                }
+                            if (
+                                a[i - 1] ==
+                                b[j - 1]
+                            ) {
+                                0
+                            } else {
+                                1
+                            }
                     )
             }
         }
 
-        return d[
-            a.length
-        ][
-            b.length
-        ]
+        return d[a.length][b.length]
     }
 
     private fun score(
@@ -2588,10 +1938,6 @@ class StepRunner(
         }
     }
 
-    // ---------------------------------------------------------
-    // OPEN APP
-    // ---------------------------------------------------------
-
     private fun openApp(
         spoken: String
     ) {
@@ -2599,7 +1945,9 @@ class StepRunner(
         val q =
             norm(
                 resolve(
-                    spoken.removeSuffix(" app")
+                    spoken.removeSuffix(
+                        " app"
+                    )
                 )
             )
 
@@ -2608,26 +1956,26 @@ class StepRunner(
 
         val apps =
             pm.queryIntentActivities(
-                Intent(
-                    Intent.ACTION_MAIN
-                ).addCategory(
-                    Intent.CATEGORY_LAUNCHER
-                ),
+                Intent(Intent.ACTION_MAIN)
+                    .addCategory(
+                        Intent.CATEGORY_LAUNCHER
+                    ),
                 0
             )
 
         val best =
-            apps.map {
-                it to score(
-                    norm(
+            apps
+                .map {
+                    it to score(
+                        norm(
+                            it.loadLabel(pm)
+                                .toString()
+                        ),
+                        q,
                         it.loadLabel(pm)
                             .toString()
-                    ),
-                    q,
-                    it.loadLabel(pm)
-                        .toString()
-                )
-            }
+                    )
+                }
                 .filter {
                     it.second > 0
                 }
@@ -2643,23 +1991,17 @@ class StepRunner(
             }
 
         if (i != null) {
-
             go(i)
-
         } else {
-
             say(
                 "I can't find $spoken"
             )
         }
     }
 
-    // ---------------------------------------------------------
-    // CONTACTS
-    // ---------------------------------------------------------
+    // ---------- contacts and calls ----------
 
-    private fun allContacts():
-            List<Contact> {
+    private fun allContacts(): List<Contact> {
 
         val out =
             mutableListOf<Contact>()
@@ -2680,10 +2022,8 @@ class StepRunner(
 
                 out += Contact(
                     it.getLong(0),
-                    it.getString(1)
-                        ?: "",
-                    it.getString(2)
-                        ?: ""
+                    it.getString(1) ?: "",
+                    it.getString(2) ?: ""
                 )
             }
         }
@@ -2735,10 +2075,6 @@ class StepRunner(
         return best.first
     }
 
-    // ---------------------------------------------------------
-    // WHATSAPP
-    // ---------------------------------------------------------
-
     private fun whatsappRow(
         contactId: Long,
         mime: String
@@ -2750,8 +2086,7 @@ class StepRunner(
                 arrayOf(
                     ContactsContract.Data._ID
                 ),
-                "${ContactsContract.Data.CONTACT_ID}=? AND " +
-                        "${ContactsContract.Data.MIMETYPE}=?",
+                "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
                 arrayOf(
                     contactId.toString(),
                     mime
@@ -2760,7 +2095,6 @@ class StepRunner(
             )
 
         return c?.use {
-
             if (it.moveToFirst()) {
                 it.getLong(0)
             } else {
@@ -2797,11 +2131,9 @@ class StepRunner(
                 )
 
             if (id == null) {
-
                 say(
                     "${c.name} isn't on WhatsApp, or WhatsApp contacts aren't synced"
                 )
-
                 return
             }
 
@@ -2841,8 +2173,7 @@ class StepRunner(
         if (
             ctx.checkSelfPermission(
                 Manifest.permission.CALL_PHONE
-            ) ==
-            PackageManager.PERMISSION_GRANTED
+            ) == PackageManager.PERMISSION_GRANTED
         ) {
 
             go(
@@ -2871,10 +2202,6 @@ class StepRunner(
         }
     }
 
-    // ---------------------------------------------------------
-    // DEVICE TOGGLES
-    // ---------------------------------------------------------
-
     private fun toggle(
         s: Step.Toggle
     ) {
@@ -2899,11 +2226,7 @@ class StepRunner(
             }.onSuccess {
 
                 say(
-                    "Flashlight " +
-                            if (s.on)
-                                "on"
-                            else
-                                "off"
+                    "Flashlight ${if (s.on) "on" else "off"}"
                 )
 
             }.onFailure {
@@ -2916,8 +2239,8 @@ class StepRunner(
             return
         }
 
-        // Android blocks direct switching of
-        // several system settings.
+        // Android blocks direct switching of these.
+        // For now this opens the correct settings page.
         if (
             directToggle(
                 ctx,
@@ -2940,22 +2263,22 @@ class StepRunner(
                     s.what.contains(
                         "airplane"
                     ) ||
-                            s.what.contains(
-                                "flight"
-                            ) ->
+                        s.what.contains(
+                            "flight"
+                        ) ->
                         Settings.ACTION_AIRPLANE_MODE_SETTINGS
 
                     s.what.contains(
                         "location"
                     ) ||
-                            s.what == "gps" ->
+                        s.what == "gps" ->
                         Settings.ACTION_LOCATION_SOURCE_SETTINGS
 
                     s.what == "nfc" ->
                         Settings.ACTION_NFC_SETTINGS
 
                     s.what == "data" ||
-                            s.what == "network" ->
+                        s.what == "network" ->
                         Settings.ACTION_WIRELESS_SETTINGS
 
                     else ->
@@ -2970,10 +2293,7 @@ class StepRunner(
     }
 }
 
-// -------------------------------------------------------------
-// SECURE VAULT
-// -------------------------------------------------------------
-
+// Encrypts secrets with a key that never leaves the phone's Keystore.
 object Vault {
 
     private fun key(): SecretKey {
@@ -2986,11 +2306,11 @@ object Vault {
             }
 
         (
-                ks.getKey(
-                    "sanya_vault",
-                    null
-                ) as? SecretKey
-                )?.let {
+            ks.getKey(
+                "sanya_vault",
+                null
+            ) as? SecretKey
+        )?.let {
             return it
         }
 
@@ -3004,7 +2324,7 @@ object Vault {
             KeyGenParameterSpec.Builder(
                 "sanya_vault",
                 KeyProperties.PURPOSE_ENCRYPT or
-                        KeyProperties.PURPOSE_DECRYPT
+                    KeyProperties.PURPOSE_DECRYPT
             )
                 .setBlockModes(
                     KeyProperties.BLOCK_MODE_GCM
@@ -3018,9 +2338,7 @@ object Vault {
         return kg.generateKey()
     }
 
-    fun enc(
-        s: String
-    ): String {
+    fun enc(s: String): String {
 
         val c =
             Cipher.getInstance(
@@ -3034,16 +2352,14 @@ object Vault {
 
         return Base64.encodeToString(
             c.iv +
-                    c.doFinal(
-                        s.toByteArray()
-                    ),
+                c.doFinal(
+                    s.toByteArray()
+                ),
             Base64.NO_WRAP
         )
     }
 
-    fun dec(
-        s: String
-    ): String {
+    fun dec(s: String): String {
 
         val b =
             Base64.decode(
