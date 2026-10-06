@@ -332,17 +332,17 @@ object IntentEngine {
         results.add(primary)
 
         // "watch X" can also mean YouTube search.
-        if (primary.startsWith("play ")) {
-            results.add(
-                "youtube " + primary.removePrefix("play ").trim()
-            )
-        }
-
         if (primary.startsWith("watch ")) {
             results.add(
-                "youtube " + primary.removePrefix("watch ").trim()
-            )
-        }
+                "play " + primary.removePrefix("watch ").trim()
+    )
+}
+
+        if (primary.startsWith("play ")) {
+            results.add(
+                "play " + primary.removePrefix("play ").trim()
+    )
+}
 
         // "find X" can be interpreted as search X.
         if (primary.startsWith("find ")) {
