@@ -293,14 +293,82 @@ class StepRunner(private val ctx: Context, private val say: (String) -> Unit, pr
     init { Brain.setup(ctx) }
 
     // Learned slang first, then normal parsing.
-    private fun plan(raw: String): List<Step> {
-        val t = Brain.clean(raw)
-        val slang = Brain.map("slang")
-        val hit = if (noSlang.containsMatchIn(t)) null else slang.keys
-            .filter { it.isNotEmpty() && Regex("\\b" + Regex.escape(it) + "\\b").containsMatchIn(t) }
-            .maxByOrNull { it.length }
-        return CommandParser.parse(if (hit != null) slang[hit] ?: raw else raw)
+    // Natural-language understanding + learned slang + normal parsing.
+private fun plan(raw: String): List<Step> {
+
+    val original = Brain.clean(raw)
+
+    if (original.isEmpty()) return emptyList()
+
+    /*
+     * 1. First check Sanya's learned slang.
+     *
+     * Example:
+     * "ring my bro"
+     * learned as:
+     * "call Ravi"
+     */
+    val slang = Brain.map("slang")
+
+    val slangHit =
+        if (noSlang.containsMatchIn(original)) {
+            null
+        } else {
+            slang.keys
+                .filter {
+                    it.isNotEmpty() &&
+                        Regex("\\b" + Regex.escape(it) + "\\b")
+                            .containsMatchIn(original)
+                }
+                .maxByOrNull { it.length }
+        }
+
+    val learnedCommand =
+        if (slangHit != null) {
+            slang[slangHit] ?: original
+        } else {
+            original
+        }
+
+    /*
+     * 2. Send the command through IntentEngine.
+     *
+     * Example:
+     *
+     * "Sanya, can you please open YouTube for me?"
+     *
+     * becomes:
+     *
+     * "open youtube"
+     */
+    val candidates = IntentEngine.alternatives(learnedCommand)
+
+    if (candidates.isEmpty()) {
+        return CommandParser.parse(learnedCommand)
     }
+
+    /*
+     * 3. Try the primary interpretation first.
+     */
+    for (candidate in candidates) {
+
+        val parsed = CommandParser.parse(candidate)
+
+        if (parsed.isNotEmpty() &&
+            parsed.none { it is Step.Unknown }
+        ) {
+            return parsed
+        }
+    }
+
+    /*
+     * 4. If the natural-language interpretation was not
+     * understood, fall back to the original command parser.
+     *
+     * This keeps old Sanya commands working.
+     */
+    return CommandParser.parse(learnedCommand)
+}
 
     // True if every part of the sentence matches a known command.
     fun understands(raw: String): Boolean {
