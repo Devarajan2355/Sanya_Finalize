@@ -581,6 +581,7 @@ class StepRunner(private val ctx: Context, private val say: (String) -> Unit, pr
             return
         }
         // Android blocks direct switching of these. For now this opens the right settings page.
+        if (directToggle(ctx, s, say)) return
         go(Intent(when {
             s.what.contains("bluetooth") -> Settings.ACTION_BLUETOOTH_SETTINGS
             s.what.contains("airplane") || s.what.contains("flight") -> Settings.ACTION_AIRPLANE_MODE_SETTINGS
