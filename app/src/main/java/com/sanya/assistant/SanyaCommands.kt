@@ -2635,13 +2635,11 @@ object KnowledgeStore {
         val q =
             question.lowercase(Locale.getDefault())
 
-        // Current office-holders and explicitly time-sensitive questions
-        // should be refreshed regularly. This is generic and contains no
-        // predefined people or countries.
+        // Current/serving questions should be refreshed frequently.
+        // The decision is delegated to IntentEngine so historical questions
+        // such as "former president" are not treated as current by accident.
         val dynamic =
-            Regex(
-                "(?i)\\b(?:current|currently|latest|today|now|present|serving|president|prime\\s+minister|chief\\s+minister|governor|chancellor|king|queen|pope|chief\\s+justice)\\b"
-            ).containsMatchIn(q)
+            IntentEngine.isTimeSensitiveQuestion(q)
 
         val maxAge =
             if (dynamic) {
@@ -2715,20 +2713,42 @@ object WebSearch {
             return null
         }
 
-        // ---------------------------------------------------------
-        // 1. Generic Wikipedia/MediaWiki knowledge lookup.
-        // ---------------------------------------------------------
-        // No person, president, prime minister, country, or office-holder
-        // is predefined. The actual question is sent to Wikipedia search,
-        // which selects the relevant article/entity dynamically.
+        // Current/serving questions should prefer search results first so
+        // the answer is not replaced by a generic article definition.
+        if (IntentEngine.isTimeSensitiveQuestion(normalized)) {
+
+            duckDuckGoHtml(normalized)?.let {
+                return it
+            }
+
+            wikipediaAnswer(normalized)?.let {
+                return it
+            }
+
+            duckDuckGoInstant(normalized)?.let {
+                return it
+            }
+
+            return null
+        }
+
+        // Stable/general entity questions can use Wikipedia first.
         wikipediaAnswer(normalized)?.let {
             return it
         }
 
-        // ---------------------------------------------------------
-        // 2. DuckDuckGo Instant Answer API.
-        // ---------------------------------------------------------
-        runCatching {
+        duckDuckGoInstant(normalized)?.let {
+            return it
+        }
+
+        return duckDuckGoHtml(normalized)
+    }
+
+    private fun duckDuckGoInstant(
+        normalized: String
+    ): String? {
+
+        return runCatching {
             val encoded =
                 URLEncoder.encode(
                     normalized,
@@ -2757,7 +2777,7 @@ object WebSearch {
                     cleanAnswer(candidate, normalized)
 
                 if (isUsableAnswer(normalized, cleaned)) {
-                    return cleaned
+                    return@runCatching cleaned
                 }
             }
 
@@ -2768,32 +2788,31 @@ object WebSearch {
                 findRelatedText(related)
 
             val cleanedRelated =
-                cleanAnswer(relatedText, normalized)
+                cleanAnswer(
+                    relatedText,
+                    normalized
+                )
 
             if (isUsableAnswer(normalized, cleanedRelated)) {
-                return cleanedRelated
+                return@runCatching cleanedRelated
             }
 
             null
-        }.getOrNull()?.let {
-            return it
-        }
+        }.getOrNull()
+    }
 
-        // ---------------------------------------------------------
-        // 3. DuckDuckGo HTML search fallback.
-        // ---------------------------------------------------------
+    private fun duckDuckGoHtml(
+        normalized: String
+    ): String? {
+
         return runCatching {
-            val queries = mutableListOf(normalized)
+            val queries = linkedSetOf(normalized)
 
-            if (
-                Regex(
-                    "(?i)^(?:who is|who's|what is)\\s+(?:the\\s+)?(?:current\\s+)?[a-z0-9 .'-]+$"
-                ).matches(normalized)
-            ) {
+            if (IntentEngine.isTimeSensitiveQuestion(normalized)) {
                 queries.add("current $normalized")
             }
 
-            for (query in queries.distinct()) {
+            for (query in queries) {
                 val encoded =
                     URLEncoder.encode(
                         query,
@@ -2808,7 +2827,10 @@ object WebSearch {
                         ?: continue
 
                 val candidates =
-                    extractSnippets(html, normalized)
+                    extractSnippets(
+                        html,
+                        normalized
+                    )
 
                 for (candidate in candidates) {
                     if (isUsableAnswer(normalized, candidate)) {
@@ -2977,8 +2999,10 @@ object WebSearch {
 
         // For former/ex/historical people, also search the natural historical
         // form. This is generic and does not contain any predefined names.
-        if (Regex("(?i)\\b(?:former|ex|previous|past|last|historical|in\\s+\\d{4})\\b"))
-                .containsMatchIn(query)) {
+        if (
+            Regex("(?i)\\b(?:former|ex|previous|past|last|historical|in\\s+\\d{4})\\b")
+                .containsMatchIn(query)
+        ) {
             val subject = query
                 .replace(Regex("(?i)^(?:who|what)\\s+(?:is|was)\\s+"), "")
                 .trim()
