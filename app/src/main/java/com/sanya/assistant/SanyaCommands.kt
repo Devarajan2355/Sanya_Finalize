@@ -956,6 +956,15 @@ class StepRunner(
     // OR the offline AI brain can answer it.
     fun understands(raw: String): Boolean {
 
+        // General knowledge questions are deliberately checked before the
+        // broad command parser. This prevents a natural question such as
+        // "who is the president of India" from being consumed by an older
+        // command/teaching rule. Existing Sanya-specific questions are
+        // protected inside IntentEngine and continue through the command path.
+        if (IntentEngine.isGeneralQuestion(raw)) {
+            return true
+        }
+
         val p = plan(raw)
 
         if (
@@ -965,17 +974,25 @@ class StepRunner(
             return true
         }
 
-        if (IntentEngine.isGeneralQuestion(raw)) {
-            return true
-        }
-
         return AIBrain.answer(raw) != null
     }
 
     // Returns how many normal command steps will run.
-    // If the normal parser cannot understand the command,
-    // the offline AI brain gets a chance to answer it.
+    // General knowledge questions are routed before command parsing;
+    // protected Sanya questions still use the existing command parser.
     fun handle(raw: String): Int {
+
+        // ---------------------------------------------------------
+        // General knowledge question
+        // ---------------------------------------------------------
+        // This MUST happen before CommandParser.parse(). The parser contains
+        // intentionally broad natural-language rules, so allowing it to run
+        // first can misclassify a knowledge question.
+
+        if (IntentEngine.isGeneralQuestion(raw)) {
+            answerGeneralQuestion(raw)
+            return 1
+        }
 
         val steps = plan(raw)
 
@@ -1008,15 +1025,6 @@ class StepRunner(
             }
 
             return steps.size
-        }
-
-        // ---------------------------------------------------------
-        // General knowledge question
-        // ---------------------------------------------------------
-
-        if (IntentEngine.isGeneralQuestion(raw)) {
-            answerGeneralQuestion(raw)
-            return 1
         }
 
         // ---------------------------------------------------------
@@ -1057,7 +1065,7 @@ class StepRunner(
         knowledgeExecutor.execute {
 
             try {
-                // 1. Local knowledge always wins.
+                // 1. Learned local knowledge always wins.
                 val local =
                     KnowledgeStore.find(ctx, question)
 
@@ -1066,7 +1074,22 @@ class StepRunner(
                     return@execute
                 }
 
-                // 2. No local answer: internet is required for a new lookup.
+                // 2. Preserve Sanya's existing offline AIBrain as a second
+                // local source. This keeps all previous built-in answers.
+                val builtIn =
+                    AIBrain.answer(raw)
+
+                if (builtIn != null) {
+                    KnowledgeStore.save(
+                        ctx,
+                        question,
+                        builtIn
+                    )
+                    safeSay(builtIn)
+                    return@execute
+                }
+
+                // 3. No local answer: internet is required for a new lookup.
                 if (!online()) {
                     safeSay(
                         "I don't know that yet, and I can't search the internet right now."
@@ -1074,7 +1097,7 @@ class StepRunner(
                     return@execute
                 }
 
-                // 3. Search the web and extract a short answer.
+                // 4. Search the web and extract a short answer.
                 val answer =
                     WebSearch.answer(question)
 
@@ -1083,14 +1106,14 @@ class StepRunner(
                     return@execute
                 }
 
-                // 4. Cache it locally for future offline answers.
+                // 5. Cache it locally for future offline answers.
                 KnowledgeStore.save(
                     ctx,
                     question,
                     answer
                 )
 
-                // 5. Use the existing Sanya speech callback.
+                // 6. Use the existing Sanya speech callback.
                 safeSay(answer)
 
             } catch (_: Throwable) {
