@@ -688,7 +688,7 @@ object CommandParser {
 
         // Phone controls
         val devices =
-            "wifi|wi-fi|bluetooth|data|network|airplane(?: mode)?|flight mode|location|gps|nfc|flash\\\\s?light|torch"
+            "wifi|wi-fi|bluetooth|data|network|airplane(?: mode)?|flight mode|location|gps|nfc|flash\\s?light|torch"
 
         Regex(
             "turn\\s+(on|off)\\s+(?:the\\s+)?(?:mobile\\s+)?($devices)"
@@ -1151,7 +1151,7 @@ class StepRunner(
                 rememberKnowledge(question, natural)
                 safeSay(natural)
 
-            } catch (_: Throwable) {
+            } catch (e: Throwable) {
                 safeSay(
                     "I couldn't answer that right now."
                 )
@@ -2826,7 +2826,11 @@ object WebSearch {
             return null
         }
 
-        val positionLabel = "$role of $place"
+        // Wikidata labels are case-sensitive ("President of India"), but the
+        // question arrives lower-cased, so rebuild the proper-case label.
+        val displayRole = titleCase(role)
+        val displayPlace = titleCase(place)
+        val positionLabel = "$displayRole of $displayPlace"
         val literal = sparqlLiteral(positionLabel)
 
         val query =
@@ -2891,10 +2895,25 @@ object WebSearch {
                 continue
             }
 
-            return "The current $role of $place is $label."
+            return "The current $role of $displayPlace is $label."
         }
 
         return null
+    }
+
+    private fun titleCase(value: String): String {
+        val small = setOf("of", "the", "and", "for", "in")
+        return value
+            .trim()
+            .split(Regex("\\s+"))
+            .mapIndexed { i, w ->
+                if (i > 0 && w.lowercase(Locale.ROOT) in small) {
+                    w.lowercase(Locale.ROOT)
+                } else {
+                    w.replaceFirstChar { c -> c.uppercase() }
+                }
+            }
+            .joinToString(" ")
     }
 
     private fun sparqlLiteral(value: String): String {
