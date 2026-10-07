@@ -2457,7 +2457,7 @@ class StepRunner(
  */
 object KnowledgeStore {
 
-    private const val PREFS = "sanya_knowledge_v2"
+    private const val PREFS = "sanya_knowledge_v3"
     private const val Q_PREFIX = "q:"
     private const val A_PREFIX = "a:"
     private const val T_PREFIX = "t:"
@@ -2732,7 +2732,19 @@ object KnowledgeStore {
 object WebSearch {
 
     private const val TIMEOUT_MS = 8000
+    private const val WIKIDATA_ENDPOINT = "https://query.wikidata.org/sparql"
 
+    /**
+     * Dynamic knowledge pipeline:
+     *
+     * 1. Wikidata for current office holders and structured facts.
+     * 2. Wikipedia for entity descriptions and historical questions.
+     * 3. DuckDuckGo Instant Answer.
+     * 4. DuckDuckGo HTML search as the last fallback.
+     *
+     * No person, president, prime minister, CEO, or other office holder
+     * is hard-coded in this file.
+     */
     fun answer(question: String): String? {
 
         val normalized =
@@ -2742,11 +2754,13 @@ object WebSearch {
             return null
         }
 
-        // Current/serving questions should prefer search results first so
-        // the answer is not replaced by a generic article definition.
+        // The most important bug fix:
+        // current office-holder questions must use structured data first.
+        // This prevents noisy search snippets such as "Name of the ..." from
+        // being spoken as though they were the actual answer.
         if (IntentEngine.isTimeSensitiveQuestion(normalized)) {
 
-            duckDuckGoHtml(normalized)?.let {
+            currentOfficeHolder(normalized)?.let {
                 return it
             }
 
@@ -2758,10 +2772,14 @@ object WebSearch {
                 return it
             }
 
+            duckDuckGoHtml(normalized)?.let {
+                return it
+            }
+
             return null
         }
 
-        // Stable/general entity questions can use Wikipedia first.
+        // Stable questions can use Wikipedia first.
         wikipediaAnswer(normalized)?.let {
             return it
         }
@@ -2771,6 +2789,121 @@ object WebSearch {
         }
 
         return duckDuckGoHtml(normalized)
+    }
+
+    /**
+     * Generic current office-holder resolver.
+     *
+     * Examples it can resolve dynamically:
+     *   who is the president of India
+     *   who is the prime minister of India
+     *   who is the chief minister of Tamil Nadu
+     *   who is the governor of Tamil Nadu
+     *
+     * The answer comes from Wikidata's structured P39 (position held)
+     * statements rather than a search-result snippet.
+     */
+    private fun currentOfficeHolder(question: String): String? {
+
+        val match =
+            Regex(
+                """(?i)^who\s+(?:is|are)\s+(?:(?:the|current|present|serving|incumbent)\s+)*""" +
+                    """(president|prime\s+minister|chief\s+minister|governor|mayor|chancellor|pope|king|queen|chief\s+justice|chairman|chairperson)\s+of\s+(.+?)\s*(?:now|currently|at\s+present|as\s+of\s+now)?$"""
+            ).find(question.trim())
+            ?: return null
+
+        val role =
+            match.groupValues[1]
+                .replace(Regex("\\s+"), " ")
+                .trim()
+
+        val place =
+            match.groupValues[2]
+                .replace(Regex("\\s+"), " ")
+                .trim()
+
+        if (role.isBlank() || place.isBlank()) {
+            return null
+        }
+
+        val positionLabel = "$role of $place"
+        val literal = sparqlLiteral(positionLabel)
+
+        val query =
+            """
+            SELECT ?person ?personLabel ?start ?end WHERE {
+              ?position rdfs:label $literal@en.
+              ?person p:P39 ?statement.
+              ?statement ps:P39 ?position.
+              OPTIONAL { ?statement pq:P580 ?start. }
+              OPTIONAL { ?statement pq:P582 ?end. }
+              FILTER(!BOUND(?end) || ?end >= NOW())
+              SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+            }
+            ORDER BY DESC(?start)
+            LIMIT 3
+            """.trimIndent()
+
+        val encoded =
+            URLEncoder.encode(query, "UTF-8")
+
+        val url =
+            "$WIKIDATA_ENDPOINT?query=$encoded&format=json"
+
+        val raw =
+            get(url)
+                ?: return null
+
+        val json =
+            runCatching { JSONObject(raw) }.getOrNull()
+                ?: return null
+
+        val bindings =
+            json.optJSONObject("results")
+                ?.optJSONArray("bindings")
+                ?: return null
+
+        for (i in 0 until bindings.length()) {
+            val row =
+                bindings.optJSONObject(i)
+                    ?: continue
+
+            val label =
+                row.optJSONObject("personLabel")
+                    ?.optString("value")
+                    ?.trim()
+                    .orEmpty()
+
+            if (label.isBlank()) {
+                continue
+            }
+
+            val lowerLabel =
+                label.lowercase(Locale.getDefault())
+
+            // Avoid returning a raw organization/position label when the
+            // structured response did not resolve to a person name.
+            if (
+                lowerLabel == positionLabel.lowercase(Locale.getDefault()) ||
+                lowerLabel == "unknown value" ||
+                lowerLabel == "no value"
+            ) {
+                continue
+            }
+
+            return "The current $role of $place is $label."
+        }
+
+        return null
+    }
+
+    private fun sparqlLiteral(value: String): String {
+        return value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", " ")
+            .replace("\r", " ")
+            .let { "\"$it\"" }
     }
 
     private fun duckDuckGoInstant(
@@ -2887,11 +3020,7 @@ object WebSearch {
                 question
             )
 
-        if (cleaned.isBlank()) {
-            return false
-        }
-
-        if (cleaned.length < 3) {
+        if (cleaned.isBlank() || cleaned.length < 3) {
             return false
         }
 
@@ -2902,7 +3031,7 @@ object WebSearch {
         val a =
             cleaned.lowercase(Locale.getDefault())
 
-        // Reject an answer that is basically just the spoken question again.
+        // Reject an answer that is basically the spoken question again.
         val qWords =
             q.split(Regex("\\s+"))
                 .filter { it.length > 2 }
@@ -2910,26 +3039,49 @@ object WebSearch {
 
         val aWords =
             a.split(Regex("\\s+"))
-                .map { it.trim(' ', '.', ',', '?', '!', ':', ';', '\"', '\'') }
+                .map {
+                    it.trim(
+                        ' ', '.', ',', '?', '!', ':', ';', '"', '\''
+                    )
+                }
                 .filter { it.length > 2 }
                 .toSet()
 
         if (qWords.isNotEmpty()) {
             val overlap =
-                qWords.intersect(aWords).size.toDouble() / qWords.size.toDouble()
+                qWords.intersect(aWords).size.toDouble() /
+                    qWords.size.toDouble()
 
             if (overlap >= 1.0 && a.length <= q.length + 35) {
                 return false
             }
         }
 
-        // Search snippets containing repeated "name of ..." fragments are
-        // often page-navigation text, not the requested answer.
+        // Search snippets with repeated navigation wording are usually not
+        // the requested answer.
         if (
-            Regex("(?i)\\bname of the\\b").containsMatchIn(a) &&
-            !Regex("(?i)\\bis\\s+[A-Z][a-z]").containsMatchIn(cleaned)
+            Regex("(?i)\\bname of the\\b")
+                .containsMatchIn(a) &&
+            !Regex("(?i)\\bis\\s+[A-Z][a-z]")
+                .containsMatchIn(cleaned)
         ) {
             return false
+        }
+
+        // A current office question must not accept a fragment that merely
+        // repeats the role. The structured provider should normally answer
+        // these questions; this guard protects the fallbacks.
+        if (IntentEngine.isTimeSensitiveQuestion(question)) {
+            val currentOfficePattern =
+                Regex(
+                    "(?i)^(?:the\\s+)?(?:current|present|serving|incumbent)?\\s*" +
+                        "(?:president|prime\\s+minister|chief\\s+minister|governor|mayor|chancellor|pope|king|queen|chief\\s+justice)" +
+                        "(?:\\s+of\\s+[^.?!]+)?[.?!]?$"
+                )
+
+            if (currentOfficePattern.matches(cleaned.trim())) {
+                return false
+            }
         }
 
         return true
@@ -2964,8 +3116,7 @@ object WebSearch {
             return ""
         }
 
-        // Remove exact query echo at the beginning, which is common in HTML
-        // search snippets and sounds terrible through TTS.
+        // Remove exact query echo at the beginning of an HTML snippet.
         if (!question.isNullOrBlank()) {
             val q =
                 IntentEngine.normalizeQuestion(question)
@@ -2981,7 +3132,7 @@ object WebSearch {
             }
         }
 
-        // Collapse directly repeated phrases/words introduced by snippets.
+        // Collapse directly repeated phrases introduced by snippets.
         repeat(3) {
             cleaned =
                 cleaned.replace(
@@ -3018,7 +3169,8 @@ object WebSearch {
         question: String
     ): String? {
 
-        val query = wikipediaQuery(question)
+        val query =
+            wikipediaQuery(question)
 
         if (query.isBlank()) {
             return null
@@ -3026,15 +3178,18 @@ object WebSearch {
 
         val queries = linkedSetOf(query)
 
-        // For former/ex/historical people, also search the natural historical
-        // form. This is generic and does not contain any predefined names.
         if (
-            Regex("(?i)\\b(?:former|ex|previous|past|last|historical|in\\s+\\d{4})\\b")
-                .containsMatchIn(query)
+            Regex(
+                "(?i)\\b(?:former|ex|previous|past|last|historical|in\\s+\\d{4})\\b"
+            ).containsMatchIn(query)
         ) {
-            val subject = query
-                .replace(Regex("(?i)^(?:who|what)\\s+(?:is|was)\\s+"), "")
-                .trim()
+            val subject =
+                query
+                    .replace(
+                        Regex("(?i)^(?:who|what)\\s+(?:is|was)\\s+"),
+                        ""
+                    )
+                    .trim()
 
             if (subject.isNotBlank()) {
                 queries.add("list of $subject")
@@ -3117,7 +3272,6 @@ object WebSearch {
     private fun wikipediaQuery(
         question: String
     ): String {
-
         return IntentEngine.normalizeQuestion(question)
             .replace(Regex("\\s+"), " ")
             .trim()
@@ -3147,8 +3301,6 @@ object WebSearch {
         val q =
             question.lowercase(Locale.getDefault())
 
-        // For who/what identity questions, prefer a sentence that actually
-        // defines the entity instead of returning a later biography detail.
         if (q.startsWith("who ") || q.startsWith("what ")) {
             val definition =
                 sentences.firstOrNull { sentence ->
@@ -3182,7 +3334,7 @@ object WebSearch {
             )
             connection.setRequestProperty(
                 "Accept",
-                "text/html,application/json;q=0.9,*/*;q=0.8"
+                "application/sparql-results+json,application/json,text/html;q=0.9,*/*;q=0.8"
             )
 
             if (connection.responseCode !in 200..299) {
@@ -3191,9 +3343,7 @@ object WebSearch {
 
             connection.inputStream
                 .bufferedReader(Charsets.UTF_8)
-                .use {
-                    it.readText()
-                }
+                .use { it.readText() }
 
         } finally {
             connection.disconnect()
@@ -3270,7 +3420,6 @@ object WebSearch {
         return results
     }
 }
-
 // Encrypts secrets with a key that never leaves the phone's Keystore.
 object Vault {
 
