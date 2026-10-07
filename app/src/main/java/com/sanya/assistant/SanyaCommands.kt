@@ -2428,7 +2428,7 @@ class StepRunner(
  */
 object KnowledgeStore {
 
-    private const val PREFS = "sanya_knowledge_v2"
+    private const val PREFS = "sanya_knowledge_v3"
     private const val Q_PREFIX = "q:"
     private const val A_PREFIX = "a:"
     private const val T_PREFIX = "t:"
@@ -2643,7 +2643,7 @@ object KnowledgeStore {
 
         val maxAge =
             if (dynamic) {
-                12L * 60L * 60L * 1000L
+                6L * 60L * 60L * 1000L
             } else {
                 30L * 24L * 60L * 60L * 1000L
             }
@@ -2704,6 +2704,14 @@ object WebSearch {
 
     private const val TIMEOUT_MS = 8000
 
+    // Wikidata property IDs used below. They are generic properties, not
+    // hard-coded people or country names.
+    private const val P_CAPITAL = "P36"
+    private const val P_HEAD_OF_STATE = "P35"
+    private const val P_HEAD_OF_GOVERNMENT = "P6"
+    private const val P_START_TIME = "P580"
+    private const val P_END_TIME = "P582"
+
     fun answer(question: String): String? {
 
         val normalized =
@@ -2713,35 +2721,471 @@ object WebSearch {
             return null
         }
 
-        // Current/serving questions should prefer search results first so
-        // the answer is not replaced by a generic article definition.
-        if (IntentEngine.isTimeSensitiveQuestion(normalized)) {
-
-            duckDuckGoHtml(normalized)?.let {
+        // 1. Structured Wikidata facts first. This prevents a text-search
+        // snippet such as "capital punishment" from being mistaken for
+        // "capital of Japan".
+        wikidataFactAnswer(normalized)?.let {
+            if (isUsableAnswer(normalized, it)) {
                 return it
             }
-
-            wikipediaAnswer(normalized)?.let {
-                return it
-            }
-
-            duckDuckGoInstant(normalized)?.let {
-                return it
-            }
-
-            return null
         }
 
-        // Stable/general entity questions can use Wikipedia first.
+        // 2. Wikipedia article lookup for broader questions.
         wikipediaAnswer(normalized)?.let {
-            return it
+            if (isUsableAnswer(normalized, it)) {
+                return it
+            }
         }
 
+        // 3. DuckDuckGo Instant Answer only as a last-resort fallback.
+        // Intentionally do not scrape DuckDuckGo HTML snippets here.
         duckDuckGoInstant(normalized)?.let {
-            return it
+            if (isUsableAnswer(normalized, it)) {
+                return it
+            }
         }
 
-        return duckDuckGoHtml(normalized)
+        return null
+    }
+
+    /**
+     * Structured fact retrieval for high-value factoid questions.
+     *
+     * Supported generically:
+     * - capital of <place>
+     * - current/former president of <place>
+     * - current/former prime minister of <place>
+     * - year-specific office-holder questions such as "who was the president
+     *   of India in 2017"
+     */
+    private fun wikidataFactAnswer(
+        question: String
+    ): String? {
+
+        val q = question
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        Regex(
+            """^(?:what\s+is|what\s+are|which\s+(?:city|place)\s+is)\s+(?:the\s+)?capital\s+of\s+(.+)$"""
+        ).find(q)?.let { m ->
+            val subjectRaw = cleanEntitySubject(m.groupValues[1])
+            if (subjectRaw.isBlank()) return@let null
+
+            val subject =
+                findWikidataEntity(subjectRaw)
+                    ?: return@let null
+
+            val targetIds =
+                claimTargetIds(subject.entity, P_CAPITAL)
+
+            if (targetIds.isEmpty()) return@let null
+
+            val labels =
+                wikidataLabels(targetIds)
+
+            val capital =
+                preferredTargetLabel(
+                    subject.entity,
+                    P_CAPITAL,
+                    labels
+                )
+                    ?: return@let null
+
+            return "The capital of ${subject.label} is $capital."
+        }
+
+        // Current/former office-holder questions.
+        val officePattern = Regex(
+            """^(?:who\s+(?:is|was)|what\s+is\s+the\s+name\s+of)\s+(?:(current|former|ex|previous|past|serving|incumbent)\s+)?(?:the\s+)?(president|prime\s+minister)\s+of\s+(.+?)(?:\s+in\s+(\d{4}))?$"""
+        )
+
+        officePattern.find(q)?.let { m ->
+            val qualifier = m.groupValues[1]
+            val office = m.groupValues[2]
+            val subjectRaw = cleanEntitySubject(m.groupValues[3])
+            val requestedYear = m.groupValues[4].toIntOrNull()
+
+            if (subjectRaw.isBlank()) return@let null
+
+            val subject =
+                findWikidataEntity(subjectRaw)
+                    ?: return@let null
+
+            val property =
+                if (office == "president") {
+                    P_HEAD_OF_STATE
+                } else {
+                    P_HEAD_OF_GOVERNMENT
+                }
+
+            val selected =
+                selectOfficeClaim(
+                    subject.entity,
+                    property,
+                    qualifier,
+                    requestedYear
+                )
+                    ?: return@let null
+
+            val labels =
+                wikidataLabels(listOf(selected.targetId))
+
+            val person =
+                labels[selected.targetId]
+                    ?: return@let null
+
+            return when {
+                requestedYear != null ->
+                    "In $requestedYear, the ${office} of ${subject.label} was $person."
+
+                qualifier.equals("former", true) ||
+                    qualifier.equals("ex", true) ||
+                    qualifier.equals("previous", true) ||
+                    qualifier.equals("past", true) ->
+                    "A former ${office} of ${subject.label} was $person."
+
+                else ->
+                    "The current ${office} of ${subject.label} is $person."
+            }
+        }
+
+        return null
+    }
+
+    private data class WikidataEntity(
+        val id: String,
+        val label: String,
+        val entity: JSONObject
+    )
+
+    private data class OfficeClaim(
+        val targetId: String,
+        val startYear: Int?,
+        val endYear: Int?,
+        val rank: String,
+        val statement: JSONObject
+    )
+
+    private fun cleanEntitySubject(value: String): String {
+        return value
+            .trim()
+            .replace(Regex("^(?:the)\\s+"), "")
+            .replace(Regex("\\s+$"), "")
+    }
+
+    private fun findWikidataEntity(
+        subject: String
+    ): WikidataEntity? {
+
+        val encoded =
+            URLEncoder.encode(subject, "UTF-8")
+
+        val url =
+            "https://www.wikidata.org/w/api.php" +
+                "?action=wbsearchentities" +
+                "&search=$encoded" +
+                "&language=en" +
+                "&uselang=en" +
+                "&format=json" +
+                "&limit=5"
+
+        val raw = get(url) ?: return null
+
+        val json =
+            runCatching { JSONObject(raw) }.getOrNull()
+                ?: return null
+
+        val items =
+            json.optJSONArray("search")
+                ?: return null
+
+        val wanted = subject
+            .trim()
+            .removePrefix("the ")
+            .lowercase(Locale.getDefault())
+
+        var fallback: WikidataEntity? = null
+
+        for (i in 0 until items.length()) {
+            val item = items.optJSONObject(i) ?: continue
+            val id = item.optString("id").trim()
+            val label = item.optString("label").trim()
+
+            if (id.isBlank() || label.isBlank()) continue
+
+            val entity =
+                getWikidataEntity(id)
+                    ?: continue
+
+            val candidate = WikidataEntity(
+                id,
+                label,
+                entity
+            )
+
+            if (label.lowercase(Locale.getDefault()) == wanted) {
+                return candidate
+            }
+
+            if (fallback == null) {
+                fallback = candidate
+            }
+        }
+
+        return fallback
+    }
+
+    private fun getWikidataEntity(
+        id: String
+    ): JSONObject? {
+
+        val url =
+            "https://www.wikidata.org/w/api.php" +
+                "?action=wbgetentities" +
+                "&ids=${URLEncoder.encode(id, "UTF-8")}" +
+                "&props=labels%7Cclaims" +
+                "&languages=en" +
+                "&format=json"
+
+        val raw = get(url) ?: return null
+        val json =
+            runCatching { JSONObject(raw) }.getOrNull()
+                ?: return null
+
+        return json
+            .optJSONObject("entities")
+            ?.optJSONObject(id)
+    }
+
+    private fun claimTargetIds(
+        entity: JSONObject,
+        property: String
+    ): List<String> {
+
+        val claims =
+            entity.optJSONObject("claims")
+                ?.optJSONArray(property)
+                ?: return emptyList()
+
+        val out = mutableListOf<String>()
+
+        for (i in 0 until claims.length()) {
+            val statement = claims.optJSONObject(i) ?: continue
+            val mainsnak = statement.optJSONObject("mainsnak") ?: continue
+            val datavalue = mainsnak.optJSONObject("datavalue") ?: continue
+            val value = datavalue.optJSONObject("value") ?: continue
+            val id = value.optString("id").trim()
+
+            if (id.isNotBlank() && id.startsWith("Q")) {
+                out.add(id)
+            }
+        }
+
+        return out.distinct()
+    }
+
+    private fun wikidataLabels(
+        ids: List<String>
+    ): Map<String, String> {
+
+        if (ids.isEmpty()) return emptyMap()
+
+        val url =
+            "https://www.wikidata.org/w/api.php" +
+                "?action=wbgetentities" +
+                "&ids=${URLEncoder.encode(ids.distinct().joinToString("|"), "UTF-8")}" +
+                "&props=labels" +
+                "&languages=en" +
+                "&format=json"
+
+        val raw = get(url) ?: return emptyMap()
+        val json =
+            runCatching { JSONObject(raw) }.getOrNull()
+                ?: return emptyMap()
+
+        val entities =
+            json.optJSONObject("entities")
+                ?: return emptyMap()
+
+        val out = mutableMapOf<String, String>()
+
+        for (id in ids.distinct()) {
+            val item = entities.optJSONObject(id) ?: continue
+            val labels = item.optJSONObject("labels") ?: continue
+            val en = labels.optJSONObject("en") ?: continue
+            val label = en.optString("value").trim()
+            if (label.isNotBlank()) {
+                out[id] = label
+            }
+        }
+
+        return out
+    }
+
+    private fun preferredTargetLabel(
+        entity: JSONObject,
+        property: String,
+        labels: Map<String, String>
+    ): String? {
+
+        val claims =
+            entity.optJSONObject("claims")
+                ?.optJSONArray(property)
+                ?: return null
+
+        var normal: String? = null
+
+        for (i in 0 until claims.length()) {
+            val statement = claims.optJSONObject(i) ?: continue
+            val mainsnak = statement.optJSONObject("mainsnak") ?: continue
+            val value = mainsnak.optJSONObject("datavalue")?.optJSONObject("value") ?: continue
+            val id = value.optString("id").trim()
+            val label = labels[id]
+
+            if (label.isNullOrBlank()) continue
+
+            if (statement.optString("rank") == "preferred") {
+                return label
+            }
+
+            if (normal == null) {
+                normal = label
+            }
+        }
+
+        return normal
+    }
+
+    private fun selectOfficeClaim(
+        entity: JSONObject,
+        property: String,
+        qualifier: String,
+        requestedYear: Int?
+    ): OfficeClaim? {
+
+        val claims =
+            entity.optJSONObject("claims")
+                ?.optJSONArray(property)
+                ?: return null
+
+        val nowYear =
+            Calendar.getInstance().get(Calendar.YEAR)
+
+        val options = mutableListOf<OfficeClaim>()
+
+        for (i in 0 until claims.length()) {
+            val statement = claims.optJSONObject(i) ?: continue
+            val mainsnak = statement.optJSONObject("mainsnak") ?: continue
+            val datavalue = mainsnak.optJSONObject("datavalue") ?: continue
+            val value = datavalue.optJSONObject("value") ?: continue
+            val targetId = value.optString("id").trim()
+
+            if (!targetId.startsWith("Q")) continue
+
+            val qualifiers = statement.optJSONObject("qualifiers")
+            val startYear = qualifierYear(qualifiers, P_START_TIME)
+            val endYear = qualifierYear(qualifiers, P_END_TIME)
+            val rank = statement.optString("rank", "normal")
+
+            options.add(
+                OfficeClaim(
+                    targetId,
+                    startYear,
+                    endYear,
+                    rank,
+                    statement
+                )
+            )
+        }
+
+        if (options.isEmpty()) return null
+
+        if (requestedYear != null) {
+            return options
+                .filter {
+                    val starts = it.startYear
+                    val ends = it.endYear
+                    (starts == null || requestedYear >= starts) &&
+                        (ends == null || requestedYear <= ends)
+                }
+                .sortedWith(
+                    compareByDescending<OfficeClaim> {
+                        it.rank == "preferred"
+                    }.thenByDescending {
+                        it.startYear ?: Int.MIN_VALUE
+                    }
+                )
+                .firstOrNull()
+        }
+
+        val wantsHistorical =
+            qualifier.equals("former", true) ||
+                qualifier.equals("ex", true) ||
+                qualifier.equals("previous", true) ||
+                qualifier.equals("past", true)
+
+        if (wantsHistorical) {
+            return options
+                .filter {
+                    it.endYear != null &&
+                        it.endYear <= nowYear
+                }
+                .sortedWith(
+                    compareByDescending<OfficeClaim> {
+                        it.endYear ?: Int.MIN_VALUE
+                    }.thenByDescending {
+                        it.rank == "preferred"
+                    }
+                )
+                .firstOrNull()
+        }
+
+        // Current: prefer a statement with no end date (or an end date in the
+        // future), then preferred rank, then the latest start date.
+        return options
+            .filter {
+                it.endYear == null ||
+                    it.endYear >= nowYear
+            }
+            .sortedWith(
+                compareByDescending<OfficeClaim> {
+                    it.endYear == null
+                }.thenByDescending {
+                    it.rank == "preferred"
+                }.thenByDescending {
+                    it.startYear ?: Int.MIN_VALUE
+                }
+            )
+            .firstOrNull()
+    }
+
+    private fun qualifierYear(
+        qualifiers: JSONObject?,
+        property: String
+    ): Int? {
+
+        val array =
+            qualifiers?.optJSONArray(property)
+                ?: return null
+
+        for (i in 0 until array.length()) {
+            val q = array.optJSONObject(i) ?: continue
+            val data = q.optJSONObject("datavalue") ?: continue
+            val value = data.optJSONObject("value") ?: continue
+            val time = value.optString("time").trim()
+
+            val year =
+                Regex("[+-]?(\\d{4})")
+                    .find(time)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toIntOrNull()
+
+            if (year != null) return year
+        }
+
+        return null
     }
 
     private fun duckDuckGoInstant(
@@ -2801,46 +3245,150 @@ object WebSearch {
         }.getOrNull()
     }
 
-    private fun duckDuckGoHtml(
-        normalized: String
+    private fun wikipediaAnswer(
+        question: String
     ): String? {
 
-        return runCatching {
-            val queries = linkedSetOf(normalized)
+        val query = wikipediaQuery(question)
 
-            if (IntentEngine.isTimeSensitiveQuestion(normalized)) {
-                queries.add("current $normalized")
+        if (query.isBlank()) {
+            return null
+        }
+
+        val encoded =
+            URLEncoder.encode(query, "UTF-8")
+
+        val searchUrl =
+            "https://en.wikipedia.org/w/api.php" +
+                "?action=query&list=search" +
+                "&srsearch=$encoded&format=json&utf8=1&srlimit=5"
+
+        val raw =
+            get(searchUrl)
+                ?: return null
+
+        val json =
+            runCatching { JSONObject(raw) }.getOrNull()
+                ?: return null
+
+        val search =
+            json.optJSONObject("query")
+                ?.optJSONArray("search")
+                ?: return null
+
+        val titleCandidates = mutableListOf<String>()
+
+        for (i in 0 until search.length()) {
+            val hit = search.optJSONObject(i) ?: continue
+            val title = hit.optString("title").trim()
+            if (title.isNotBlank()) {
+                titleCandidates.add(title)
             }
+        }
 
-            for (query in queries) {
-                val encoded =
-                    URLEncoder.encode(
-                        query,
-                        "UTF-8"
-                    )
-
-                val url =
-                    "https://html.duckduckgo.com/html/?q=$encoded"
-
-                val html =
-                    get(url)
-                        ?: continue
-
-                val candidates =
-                    extractSnippets(
-                        html,
-                        normalized
-                    )
-
-                for (candidate in candidates) {
-                    if (isUsableAnswer(normalized, candidate)) {
-                        return@runCatching candidate
-                    }
+        // Exact title first, then the search ranking.
+        val orderedTitles =
+            titleCandidates.distinct().sortedWith(
+                compareByDescending<String> {
+                    it.equals(query, ignoreCase = true)
                 }
-            }
+            )
 
-            null
-        }.getOrNull()
+        for (title in orderedTitles) {
+            val slug =
+                URLEncoder.encode(
+                    title.replace(' ', '_'),
+                    "UTF-8"
+                )
+
+            val pageUrl =
+                "https://en.wikipedia.org/api/rest_v1/page/summary/$slug"
+
+            val pageRaw =
+                get(pageUrl)
+                    ?: continue
+
+            val page =
+                runCatching { JSONObject(pageRaw) }.getOrNull()
+                    ?: continue
+
+            val extract =
+                page.optString("extract").trim()
+
+            if (extract.isBlank()) continue
+
+            val answer =
+                answerFromWikipedia(question, extract)
+
+            if (isUsableAnswer(question, answer)) {
+                return answer
+            }
+        }
+
+        return null
+    }
+
+    private fun wikipediaQuery(
+        question: String
+    ): String {
+
+        var q =
+            IntentEngine.normalizeQuestion(question)
+                .replace(Regex("\\s+"), " ")
+                .trim()
+
+        // Ask Wikipedia for the entity/topic rather than the entire question.
+        // This avoids results like "capital punishment" for a capital question.
+        q = q.replace(
+            Regex("""^(?:who|what|where|when|why|how|which|whose)\s+(?:is|are|was|were|do|does|did|can|could|has|have|had)\s+"""),
+            ""
+        )
+
+        q = q.replace(
+            Regex("""^(?:the\s+)?(?:name|meaning|definition)\s+of\s+"""),
+            ""
+        )
+
+        return q.trim()
+    }
+
+    private fun answerFromWikipedia(
+        question: String,
+        extract: String
+    ): String {
+
+        val cleaned =
+            cleanAnswer(extract, question)
+
+        if (cleaned.isBlank()) {
+            return ""
+        }
+
+        val sentences =
+            Regex("(?<=[.!?])\\s+")
+                .split(cleaned)
+                .filter { it.isNotBlank() }
+
+        if (sentences.isEmpty()) {
+            return cleaned
+        }
+
+        val q =
+            question.lowercase(Locale.getDefault())
+
+        if (q.startsWith("who ") || q.startsWith("what ")) {
+            val definition =
+                sentences.firstOrNull { sentence ->
+                    Regex("(?i)\\b(?:is|was|are|were)\\b")
+                        .containsMatchIn(sentence)
+                }
+
+            if (!definition.isNullOrBlank()) {
+                return definition.trim()
+            }
+        }
+
+        return sentences.take(2).joinToString(" ").trim()
     }
 
     fun isUsableAnswer(
@@ -2848,23 +3396,12 @@ object WebSearch {
         answer: String?
     ): Boolean {
 
-        if (answer.isNullOrBlank()) {
-            return false
-        }
+        if (answer.isNullOrBlank()) return false
 
         val cleaned =
-            cleanAnswer(
-                answer,
-                question
-            )
+            cleanAnswer(answer, question)
 
-        if (cleaned.isBlank()) {
-            return false
-        }
-
-        if (cleaned.length < 3) {
-            return false
-        }
+        if (cleaned.length < 3) return false
 
         val q =
             IntentEngine.normalizeQuestion(question)
@@ -2873,7 +3410,38 @@ object WebSearch {
         val a =
             cleaned.lowercase(Locale.getDefault())
 
-        // Reject an answer that is basically just the spoken question again.
+        val capitalQuestion = Regex(
+            """\b(?:capital\s+of|capital\s+city\s+of)\b"""
+        ).containsMatchIn(q)
+
+        if (capitalQuestion) {
+            // Explicitly reject the exact failure mode we are fixing.
+            if (a.contains("capital punishment")) return false
+
+            if (
+                !Regex(
+                    """\b(?:capital\s+city|is\s+the\s+capital|are\s+the\s+capital|capital\s+of)\b"""
+                ).containsMatchIn(a)
+            ) {
+                return false
+            }
+        }
+
+        val officeQuestion = Regex(
+            """\b(?:president|prime\s+minister)\b"""
+        ).containsMatchIn(q)
+
+        if (officeQuestion) {
+            if (
+                !Regex(
+                    """\b(?:president|prime\s+minister)\b"""
+                ).containsMatchIn(a)
+            ) {
+                return false
+            }
+        }
+
+        // Reject query echoes and obviously fragmented navigation text.
         val qWords =
             q.split(Regex("\\s+"))
                 .filter { it.length > 2 }
@@ -2881,21 +3449,24 @@ object WebSearch {
 
         val aWords =
             a.split(Regex("\\s+"))
-                .map { it.trim(' ', '.', ',', '?', '!', ':', ';', '\"', '\'') }
+                .map {
+                    it.trim(
+                        ' ', '.', ',', '?', '!', ':', ';', '"', '\''
+                    )
+                }
                 .filter { it.length > 2 }
                 .toSet()
 
         if (qWords.isNotEmpty()) {
             val overlap =
-                qWords.intersect(aWords).size.toDouble() / qWords.size.toDouble()
+                qWords.intersect(aWords).size.toDouble() /
+                    qWords.size.toDouble()
 
             if (overlap >= 1.0 && a.length <= q.length + 35) {
                 return false
             }
         }
 
-        // Search snippets containing repeated "name of ..." fragments are
-        // often page-navigation text, not the requested answer.
         if (
             Regex("(?i)\\bname of the\\b").containsMatchIn(a) &&
             !Regex("(?i)\\bis\\s+[A-Z][a-z]").containsMatchIn(cleaned)
@@ -2935,8 +3506,6 @@ object WebSearch {
             return ""
         }
 
-        // Remove exact query echo at the beginning, which is common in HTML
-        // search snippets and sounds terrible through TTS.
         if (!question.isNullOrBlank()) {
             val q =
                 IntentEngine.normalizeQuestion(question)
@@ -2952,7 +3521,7 @@ object WebSearch {
             }
         }
 
-        // Collapse directly repeated phrases/words introduced by snippets.
+        // Remove immediate duplicate fragments.
         repeat(3) {
             cleaned =
                 cleaned.replace(
@@ -2974,165 +3543,15 @@ object WebSearch {
                     .trim()
         }
 
-        if (cleaned.length > 400) {
+        if (cleaned.length > 450) {
             cleaned =
                 cleaned
-                    .take(397)
+                    .take(447)
                     .trimEnd()
                     .plus("...")
         }
 
         return cleaned
-    }
-
-    private fun wikipediaAnswer(
-        question: String
-    ): String? {
-
-        val query = wikipediaQuery(question)
-
-        if (query.isBlank()) {
-            return null
-        }
-
-        val queries = linkedSetOf(query)
-
-        // For former/ex/historical people, also search the natural historical
-        // form. This is generic and does not contain any predefined names.
-        if (
-            Regex("(?i)\\b(?:former|ex|previous|past|last|historical|in\\s+\\d{4})\\b")
-                .containsMatchIn(query)
-        ) {
-            val subject = query
-                .replace(Regex("(?i)^(?:who|what)\\s+(?:is|was)\\s+"), "")
-                .trim()
-
-            if (subject.isNotBlank()) {
-                queries.add("list of $subject")
-            }
-        }
-
-        for (searchQuery in queries) {
-            val encoded =
-                URLEncoder.encode(searchQuery, "UTF-8")
-
-            val searchUrl =
-                "https://en.wikipedia.org/w/api.php" +
-                    "?action=query&list=search" +
-                    "&srsearch=$encoded&format=json&utf8=1&srlimit=5"
-
-            val raw =
-                get(searchUrl)
-                    ?: continue
-
-            val json =
-                runCatching { JSONObject(raw) }.getOrNull()
-                    ?: continue
-
-            val search =
-                json.optJSONObject("query")
-                    ?.optJSONArray("search")
-                    ?: continue
-
-            for (i in 0 until search.length()) {
-                val hit =
-                    search.optJSONObject(i)
-                        ?: continue
-
-                val title =
-                    hit.optString("title").trim()
-
-                if (title.isBlank()) {
-                    continue
-                }
-
-                val slug =
-                    URLEncoder.encode(
-                        title.replace(' ', '_'),
-                        "UTF-8"
-                    )
-
-                val pageUrl =
-                    "https://en.wikipedia.org/api/rest_v1/page/summary/$slug"
-
-                val pageRaw =
-                    get(pageUrl)
-                        ?: continue
-
-                val page =
-                    runCatching { JSONObject(pageRaw) }.getOrNull()
-                        ?: continue
-
-                val extract =
-                    page.optString("extract").trim()
-
-                if (extract.isBlank()) {
-                    continue
-                }
-
-                val answer =
-                    answerFromWikipedia(
-                        question,
-                        extract
-                    )
-
-                if (isUsableAnswer(question, answer)) {
-                    return answer
-                }
-            }
-        }
-
-        return null
-    }
-
-    private fun wikipediaQuery(
-        question: String
-    ): String {
-
-        return IntentEngine.normalizeQuestion(question)
-            .replace(Regex("\\s+"), " ")
-            .trim()
-    }
-
-    private fun answerFromWikipedia(
-        question: String,
-        extract: String
-    ): String {
-
-        val cleaned =
-            cleanAnswer(extract, question)
-
-        if (cleaned.isBlank()) {
-            return ""
-        }
-
-        val sentences =
-            Regex("(?<=[.!?])\\s+")
-                .split(cleaned)
-                .filter { it.isNotBlank() }
-
-        if (sentences.isEmpty()) {
-            return cleaned
-        }
-
-        val q =
-            question.lowercase(Locale.getDefault())
-
-        // For who/what identity questions, prefer a sentence that actually
-        // defines the entity instead of returning a later biography detail.
-        if (q.startsWith("who ") || q.startsWith("what ")) {
-            val definition =
-                sentences.firstOrNull { sentence ->
-                    Regex("(?i)\\b(?:is|was|are|were)\\b")
-                        .containsMatchIn(sentence)
-                }
-
-            if (!definition.isNullOrBlank()) {
-                return definition.trim()
-            }
-        }
-
-        return sentences.take(2).joinToString(" ").trim()
     }
 
     private fun get(urlString: String): String? {
@@ -3147,13 +3566,16 @@ object WebSearch {
             connection.connectTimeout = TIMEOUT_MS
             connection.readTimeout = TIMEOUT_MS
             connection.instanceFollowRedirects = true
+
+            // Wikimedia asks API clients to identify themselves. Keeping a
+            // stable User-Agent also helps avoid generic/anonymous treatment.
             connection.setRequestProperty(
                 "User-Agent",
-                "Mozilla/5.0 (Linux; Android) Sanya/1.0"
+                "SanyaAssistant/1.0 (Android; com.sanya.assistant)"
             )
             connection.setRequestProperty(
                 "Accept",
-                "text/html,application/json;q=0.9,*/*;q=0.8"
+                "application/json"
             )
 
             if (connection.responseCode !in 200..299) {
@@ -3180,25 +3602,21 @@ object WebSearch {
         }
 
         for (i in 0 until array.length()) {
-            val item =
-                array.opt(i)
+            val item = array.opt(i)
 
             if (item !is JSONObject) {
                 continue
             }
 
-            val text =
-                item.optString("Text")
+            val text = item.optString("Text")
 
             if (text.isNotBlank()) {
                 return text
             }
 
-            val nested =
-                item.optJSONArray("Topics")
+            val nested = item.optJSONArray("Topics")
 
-            val nestedText =
-                findRelatedText(nested)
+            val nestedText = findRelatedText(nested)
 
             if (!nestedText.isNullOrBlank()) {
                 return nestedText
@@ -3206,39 +3624,6 @@ object WebSearch {
         }
 
         return null
-    }
-
-    private fun extractSnippets(
-        html: String,
-        question: String
-    ): List<String> {
-
-        val patterns = listOf(
-            Regex(
-                """(?is)<(?:a|div)[^>]*class=[\"'][^\"']*result__snippet[^\"']*[\"'][^>]*>(.*?)</(?:a|div)>"""
-            ),
-            Regex(
-                """(?is)<(?:a|div)[^>]*class=[\"'][^\"']*result__a[^\"']*[\"'][^>]*>(.*?)</(?:a|div)>"""
-            )
-        )
-
-        val results = mutableListOf<String>()
-
-        for (pattern in patterns) {
-            for (match in pattern.findAll(html).take(8)) {
-                val cleaned =
-                    cleanAnswer(
-                        match.groupValues[1],
-                        question
-                    )
-
-                if (cleaned.isNotBlank() && cleaned !in results) {
-                    results.add(cleaned)
-                }
-            }
-        }
-
-        return results
     }
 }
 
