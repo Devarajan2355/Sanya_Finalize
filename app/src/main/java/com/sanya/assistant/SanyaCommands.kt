@@ -908,8 +908,17 @@ class StepRunner(
 
     // Most recent general-knowledge exchange. Kept in memory only so a
     // follow-up can be handled conversationally without changing Brain.
-    private var lastKnowledgeQuestion = ""
-    private var lastKnowledgeAnswer = ""
+    @Volatile private var lastKnowledgeQuestion = ""
+    @Volatile private var lastKnowledgeAnswer = ""
+    @Volatile private var lastKnowledgeAt = 0L
+
+    // Conversation state: a question Sanya asked and is waiting on.
+    //  confirmCmd    "Did you mean X?" / "Shall I do X?"  (waiting for yes/no)
+    //  teachPhrase   "What should I do when you say X?"   (waiting for a command)
+    private var confirmCmd = ""
+    private var confirmPhrase = ""
+    private var teachPhrase = ""
+    private var pendingAt = 0L
 
     // Web lookups and local knowledge I/O must never block the UI thread.
     private val knowledgeExecutor =
@@ -1011,56 +1020,75 @@ class StepRunner(
         return best
     }
 
-    // True if the normal command parser understands the command
-    // OR the offline AI brain can answer it.
+    // True if Sanya understands the input: she is waiting for an answer,
+    // it is a chat about herself, a follow-up question, a general question,
+    // a normal command, or something the offline brain can answer.
     fun understands(raw: String): Boolean {
 
+        if (pendingValid()) return true
+
+        if (Mind.kind(raw) != null) return true
+
         // Natural-language questions must bypass the broad command parser.
-        // Otherwise phrases such as "who is the president of India" can be
-        // mistaken for older meaning/teaching rules.
-        if (IntentEngine.isGeneralQuestion(raw)) {
-            return true
-        }
+        val effective = followUp(raw) ?: raw
+
+        if (IntentEngine.isGeneralQuestion(effective)) return true
 
         val p = plan(raw)
 
-        if (
-            p.isNotEmpty() &&
-            p.none { it is Step.Unknown }
-        ) {
-            return true
-        }
+        if (p.isNotEmpty() && p.none { it is Step.Unknown }) return true
 
         return AIBrain.answer(raw) != null
     }
 
+    // True while Sanya has asked a question and is waiting for the answer.
+    // BubbleService keeps the microphone open (no wake word) while this is true.
+    fun wantsReply(): Boolean = pendingValid()
+
     // Returns how many normal command steps will run.
-    // If the normal parser cannot understand the command,
-    // the offline AI brain gets a chance to answer it.
     fun handle(raw: String): Int {
 
         // ---------------------------------------------------------
-        // General knowledge question
+        // 1. Answer to a question Sanya just asked
+        // ---------------------------------------------------------
+
+        if (pendingValid()) {
+            val r = answerPending(raw)
+            if (r >= 0) return r
+        }
+
+        // ---------------------------------------------------------
+        // 2. Conversation about Sanya herself or about the user
+        // ---------------------------------------------------------
+
+        val kind = Mind.kind(raw)
+        if (kind != null) return converse(kind, raw)
+
+        // ---------------------------------------------------------
+        // 3. Follow-up ("what about japan" after a capital question)
+        // ---------------------------------------------------------
+
+        val effective = followUp(raw) ?: raw
+
+        // ---------------------------------------------------------
+        // 4. General knowledge question
         // ---------------------------------------------------------
         // MUST be checked before CommandParser.parse(). The command parser
         // contains intentionally broad natural-language/teaching patterns.
-        // A real question should never be redirected to Step.Mean.
 
-        if (IntentEngine.isGeneralQuestion(raw)) {
-            answerGeneralQuestion(raw)
+        if (IntentEngine.isGeneralQuestion(effective)) {
+            Mind.record(ctx, Brain.clean(effective), true)
+            answerGeneralQuestion(effective)
             return 1
         }
 
         val steps = plan(raw)
 
         // ---------------------------------------------------------
-        // Normal Sanya command
+        // 5. Normal Sanya command
         // ---------------------------------------------------------
 
-        if (
-            steps.isNotEmpty() &&
-            steps.none { it is Step.Unknown }
-        ) {
+        if (steps.isNotEmpty() && steps.none { it is Step.Unknown }) {
 
             if (
                 steps.none {
@@ -1072,41 +1100,244 @@ class StepRunner(
                 lastCommand = raw
             }
 
-            steps.forEachIndexed { i, s ->
-                ui.postDelayed(
-                    {
-                        exec(s)
-                    },
-                    i * 2500L
-                )
-            }
-
-            return steps.size
+            Mind.record(ctx, Brain.clean(raw), true)
+            return run(steps)
         }
 
         // ---------------------------------------------------------
-        // Offline AI Brain
+        // 6. Offline AI Brain
         // ---------------------------------------------------------
 
-        val aiAnswer =
-            AIBrain.answer(raw)
+        val aiAnswer = AIBrain.answer(raw)
 
         if (aiAnswer != null) {
+            Mind.record(ctx, Brain.clean(raw), true)
             say(aiAnswer)
             return 1
         }
 
         // ---------------------------------------------------------
-        // Completely unknown command
+        // 7. Not understood: use what she has learned, or ask and learn
         // ---------------------------------------------------------
 
-        lastUnknown = Brain.clean(raw)
+        return learnOrAsk(raw)
+    }
 
-        say(
-            "I didn't get that. Say 'that means' and what I should do, and I'll learn it."
-        )
+    // ---------------------------------------------------------------
+    // Her own mind: conversation, learning, curiosity
+    // ---------------------------------------------------------------
 
+    private fun run(steps: List<Step>): Int {
+        steps.forEachIndexed { i, s ->
+            ui.postDelayed({ exec(s) }, i * 2500L)
+        }
+        return steps.size
+    }
+
+    // Runs a stored command directly. Never re-applies slang, so a bad
+    // rule can never loop.
+    private fun perform(cmd: String): Int {
+
+        if (IntentEngine.isGeneralQuestion(cmd)) {
+            answerGeneralQuestion(cmd)
+            return 1
+        }
+
+        val steps = CommandParser.parse(cmd)
+
+        if (steps.isNotEmpty() && steps.none { it is Step.Unknown }) {
+            return run(steps)
+        }
+
+        val ai = AIBrain.answer(cmd)
+
+        if (ai != null) {
+            say(ai)
+            return 1
+        }
+
+        say("I can't do that one yet.")
         return 0
+    }
+
+    private fun pendingValid(): Boolean =
+        (confirmCmd.isNotEmpty() || teachPhrase.isNotEmpty()) &&
+            System.currentTimeMillis() - pendingAt < 20_000L
+
+    private fun clearPending() {
+        confirmCmd = ""
+        confirmPhrase = ""
+        teachPhrase = ""
+    }
+
+    private val yesRx = Regex(
+        """^(?:yes|yeah|yep|yup|ya|ok|okay|sure|correct|right|do it|please do)\b"""
+    )
+
+    private val noRx = Regex(
+        """^(?:no|nope|nah|never mind|nevermind|cancel|forget it|skip)\b"""
+    )
+
+    // Returns the step count if the sentence answered my question,
+    // or -1 if it was something else (then it is handled as a fresh command).
+    private fun answerPending(raw: String): Int {
+
+        val t = Brain.clean(raw)
+
+        // ---- "Did you mean X?" / "Shall I do X?" ----
+        if (confirmCmd.isNotEmpty()) {
+
+            val cmd = confirmCmd
+            val phrase = confirmPhrase
+
+            if (yesRx.containsMatchIn(t)) {
+                clearPending()
+
+                if (phrase.isNotEmpty()) {
+                    Brain.link("slang", phrase, cmd)
+                    quiet("Learned: $phrase")
+                }
+
+                Mind.record(ctx, if (phrase.isNotEmpty()) phrase else Brain.clean(cmd), true)
+                return maxOf(perform(cmd), 1)
+            }
+
+            if (noRx.containsMatchIn(t)) {
+                clearPending()
+
+                if (phrase.isNotEmpty()) {
+                    teachPhrase = phrase
+                    pendingAt = System.currentTimeMillis()
+                    say("Okay. What should I do when you say $phrase?")
+                } else {
+                    say("Okay.")
+                }
+                return 1
+            }
+
+            clearPending()
+            return -1
+        }
+
+        // ---- "What should I do when you say X?" ----
+        if (teachPhrase.isNotEmpty()) {
+
+            val phrase = teachPhrase
+
+            if (noRx.containsMatchIn(t)) {
+                clearPending()
+                say("Okay, I'll forget it.")
+                return 1
+            }
+
+            val steps = CommandParser.parse(raw)
+
+            clearPending()
+
+            if (steps.isNotEmpty() && steps.none { it is Step.Unknown }) {
+                Brain.link("slang", phrase, raw)
+                quiet("Learned: $phrase = $raw")
+                say("Got it. When you say $phrase, I'll $raw.")
+                ui.postDelayed({ perform(raw) }, 2500L)
+                return 1
+            }
+
+            say("I don't know how to do that either, so I'll skip it for now.")
+            return 1
+        }
+
+        return -1
+    }
+
+    // Not understood. If it is close to something she was taught, act on it
+    // (or check with you). Otherwise be curious: ask what it means.
+    private fun learnOrAsk(raw: String): Int {
+
+        val t = Brain.clean(raw)
+        lastUnknown = t
+
+        val slang = Brain.map("slang")
+        val best = Mind.best(t, slang.keys)
+        val cmd = if (best != null) slang[best.first] ?: "" else ""
+
+        if (best != null && cmd.isNotEmpty()) {
+
+            // Very close: she is sure, so she learns this wording too.
+            if (best.second >= 0.80) {
+                Brain.link("slang", t, cmd)
+                quiet("Learned: $t = ${best.first}")
+                Mind.record(ctx, t, true)
+                return maxOf(perform(cmd), 1)
+            }
+
+            // Somewhat close: check first.
+            if (best.second >= 0.45) {
+                confirmPhrase = t
+                confirmCmd = cmd
+                teachPhrase = ""
+                pendingAt = System.currentTimeMillis()
+                say("Did you mean ${best.first}?")
+                return 1
+            }
+        }
+
+        // Nothing close: she doesn't know yet, so she asks.
+        Mind.record(ctx, t, false)
+
+        teachPhrase = t
+        confirmCmd = ""
+        confirmPhrase = ""
+        pendingAt = System.currentTimeMillis()
+
+        say("I don't know \"$raw\" yet. What should I do when you say that?")
+        return 1
+    }
+
+    private fun converse(kind: String, raw: String): Int {
+
+        if (kind == "suggest") {
+            val h = Mind.habit(ctx)
+            if (h != null) {
+                confirmCmd = h
+                confirmPhrase = ""
+                teachPhrase = ""
+                pendingAt = System.currentTimeMillis()
+                say("Around this time you usually say $h. Shall I do that?")
+                return 1
+            }
+        }
+
+        say(Mind.reply(ctx, kind, raw, name()))
+        return 1
+    }
+
+    // "what about japan" right after "what is the capital of india"
+    // becomes "what is the capital of japan".
+    private fun followUp(raw: String): String? {
+
+        if (lastKnowledgeQuestion.isEmpty()) return null
+        if (System.currentTimeMillis() - lastKnowledgeAt > 5 * 60_000L) return null
+
+        val t = raw.lowercase()
+            .replace(Regex("""[^a-z0-9 ]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+        val subject = Regex("""^(?:and\s+)?(?:what|how)\s+about\s+(.+)$""")
+            .find(t)?.groupValues?.get(1)?.trim()
+            ?: return null
+
+        if (subject.isEmpty()) return null
+
+        val last = lastKnowledgeQuestion
+
+        val m = Regex("""^(.*\b(?:of|in|for|at)\s+)(.+)$""").find(last)
+        if (m != null) return m.groupValues[1] + subject
+
+        if (last.startsWith("what is ")) return "what is $subject"
+        if (last.startsWith("who is ")) return "who is $subject"
+
+        return null
     }
 
     private fun answerGeneralQuestion(raw: String) {
@@ -1219,6 +1450,7 @@ class StepRunner(
     ) {
         lastKnowledgeQuestion = question
         lastKnowledgeAnswer = answer
+        lastKnowledgeAt = System.currentTimeMillis()
     }
 
     private fun safeSay(text: String) {
@@ -1940,6 +2172,11 @@ class StepRunner(
                             "."
                     }
 
+                val hint =
+                    Mind.habit(ctx)?.let {
+                        " Around now you often say $it."
+                    } ?: ""
+
                 say(
                     "$greet${name()}. " +
                         "It's ${now("h:mm a")}, " +
@@ -1950,6 +2187,7 @@ class StepRunner(
                             )
                         } percent. " +
                         tail +
+                        hint +
                         if (online()) {
                             ""
                         } else {
