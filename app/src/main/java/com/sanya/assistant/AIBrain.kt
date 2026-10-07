@@ -36,7 +36,7 @@ object AIBrain {
 
         // Remove common wake words.
         text = text.replace(
-            Regex("""\b(?:hey\s+)?(?:sanya|sania|saniya|sonya|sunya)\b"""),
+            Regex("""\b(?:hey\s+)?(?:sanya|sania|saniya|sonya|sonia|sunya)\b"""),
             " "
         )
 
@@ -263,10 +263,11 @@ object AIBrain {
             return "The speed of light in vacuum is approximately 300,000 kilometres per second."
         }
 
+        // Word boundaries: plain contains("what is ai") also matched
+        // "what is air", "what is aim", "what is aid", ...
         if (
-            text.contains("meaning of ai") ||
-            text.contains("what is ai") ||
-            text.contains("what does ai mean")
+            Regex("""\b(?:meaning of ai|what is ai|what does ai mean)\b""")
+                .containsMatchIn(text)
         ) {
             return "AI stands for Artificial Intelligence. It is technology that enables computers to perform tasks that normally require human intelligence."
         }
