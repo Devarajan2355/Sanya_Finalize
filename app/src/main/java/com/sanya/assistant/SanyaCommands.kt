@@ -932,7 +932,7 @@ class StepRunner(
 
         val slang = Brain.map("slang")
 
-        val hit =
+        val exact =
             if (noSlang.containsMatchIn(t)) {
                 null
             } else {
@@ -948,6 +948,14 @@ class StepRunner(
                     .maxByOrNull { it.length }
             }
 
+        // No exact match: tolerate small mishearings ("movy time" -> "movie time").
+        val hit =
+            exact ?: if (noSlang.containsMatchIn(t)) {
+                null
+            } else {
+                fuzzyHit(t, slang.keys)
+            }
+
         return CommandParser.parse(
             if (hit != null) {
                 slang[hit] ?: raw
@@ -955,6 +963,52 @@ class StepRunner(
                 raw
             }
         )
+    }
+
+    // Closest learned slang phrase within a small edit distance, or null.
+    // Slides a window of the same word count over the spoken sentence, so
+    // "movy time please" can still match "movie time".
+    private fun fuzzyHit(
+        t: String,
+        keys: Collection<String>
+    ): String? {
+
+        val words = t.split(" ").filter { it.isNotEmpty() }
+
+        var best: String? = null
+        var bestDist = Int.MAX_VALUE
+
+        for (k in keys) {
+
+            if (k.length < 4) continue
+
+            val n = k.split(" ").size
+
+            if (words.size < n) continue
+
+            val allowed = if (k.length >= 9) 2 else 1
+
+            for (i in 0..(words.size - n)) {
+
+                val chunk =
+                    words.subList(i, i + n).joinToString(" ")
+
+                val d = minOf(
+                    lev(chunk, k),
+                    lev(
+                        chunk.replace(" ", ""),
+                        k.replace(" ", "")
+                    )
+                )
+
+                if (d <= allowed && d < bestDist) {
+                    bestDist = d
+                    best = k
+                }
+            }
+        }
+
+        return best
     }
 
     // True if the normal command parser understands the command
