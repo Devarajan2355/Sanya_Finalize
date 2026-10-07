@@ -514,7 +514,7 @@ object IntentEngine {
 
         text = text.replace(
             Regex(
-                """\b(?:actually|basically|simply|really|maybe|just|kindly|now)\b"""
+                """\b(?:actually|basically|simply|really|maybe|just|kindly)\b"""
             ),
             " "
         )
@@ -565,135 +565,11 @@ object IntentEngine {
      * Existing command transformations are reused first so wake words and
      * polite wrappers are removed consistently with the rest of Sanya.
      */
+    /**
+     * Normalizes a knowledge question without applying command-specific
+     * rewrites. Temporal and historical words are deliberately preserved.
+     */
     fun normalizeQuestion(input: String): String {
-
-        var text = process(input)
-
-        if (text.isEmpty()) return ""
-
-        text = text
-            .replace(Regex("""^(?:tell\s+me|give\s+me)\s+"""), "")
-            .replace(Regex("""^(?:do\s+you\s+know)\s+"""), "")
-            .replace(Regex("""^(?:could\s+you|would\s+you|can\s+you)\s+"""), "")
-            .replace(Regex("""\s+(?:please|pls|plz)$"""), "")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
-
-        return text
-    }
-
-    /**
-     * True only for an unresolved natural-language question.
-     * Normal Sanya commands are checked by CommandParser first, so commands
-     * such as "what is the time" or "how do I get to Chennai" still follow
-     * their existing command paths.
-     */
-    /**
-     * Returns true when the sentence is a real-world/general knowledge
-     * question that should go to Sanya's knowledge pipeline instead of the
-     * normal command parser.
-     *
-     * Important: questions about Sanya's own tools/memory (time, battery,
-     * notes, todos, personal facts, calculator, etc.) remain protected so
-     * the existing command system keeps handling them.
-     */
-    fun isGeneralQuestion(input: String): Boolean {
-
-        val question =
-            normalizeQuestion(input)
-
-        if (question.isEmpty()) return false
-
-        if (isProtectedCommandQuestion(question)) {
-            return false
-        }
-
-        val directQuestion = Regex(
-            """^(?:what|who|whom|when|where|why|how|which|whose|is|are|was|were|am|can|could|will|would|should|shall|has|have|had|do|does|did)\b"""
-        ).containsMatchIn(question)
-
-        if (directQuestion) {
-            return true
-        }
-
-        // Natural spoken forms such as:
-        // "tell me who the president of India is"
-        // "give me information about photosynthesis"
-        return Regex(
-            """^(?:tell\s+me|give\s+me)\s+(?:what|who|whom|when|where|why|how|which|whose|information\s+about|details\s+about)\b"""
-        ).containsMatchIn(question)
-    }
-
-    /**
-     * Questions that intentionally belong to Sanya's existing command
-     * system. These must not be sent to web search.
-     */
-    fun isProtectedCommandQuestion(input: String): Boolean {
-
-        val question =
-            normalizeQuestionForClassification(input)
-
-        if (question.isEmpty()) return false
-
-        if (Regex(
-                """^(?:what\s+(?:is|are)|what's|what)\s+(?:the\s+)?(?:time|date|day)|^(?:what\s+time|time\s+now|current\s+time|today's\s+date|today\s+date)\b"""
-            ).containsMatchIn(question)) {
-            return true
-        }
-
-        if (Regex(
-                """^(?:how\s+much\s+battery|what\s+(?:is|are)\s+my\s+battery|battery|battery\s+level)\b"""
-            ).containsMatchIn(question)) {
-            return true
-        }
-
-        if (Regex(
-                """^(?:am\s+i\s+(?:online|offline)|do\s+i\s+have\s+internet|is\s+(?:the\s+)?internet\s+(?:on|connected|working)|network\s+status)\b"""
-            ).containsMatchIn(question)) {
-            return true
-        }
-
-        if (Regex(
-                """^(?:what\s+(?:did|have|do)\s+you\s+(?:learn|know))\b"""
-            ).containsMatchIn(question)) {
-            return true
-        }
-
-        // Personal memory / Brain recall.
-        if (Regex(
-                """^(?:what\s+(?:is|are)|what's|tell\s+me|show\s+me|read)\s+my\s+.+"""
-            ).matches(question)) {
-            return true
-        }
-
-        // Notes and todo list.
-        if (Regex(
-                """^(?:(?:read|show|list|what\s+(?:is|are)|what's)\s+)?(?:my\s+)?notes\b"""
-            ).containsMatchIn(question) ||
-            Regex(
-                """^(?:(?:read|show|list|what\s+(?:is|are)|what's)\s+)?(?:my\s+)?(?:to-?do|todo)\s+list\b"""
-            ).containsMatchIn(question)) {
-            return true
-        }
-
-        // Calculator expressions should remain offline and local.
-        if (Regex(
-                """^(?:calculate|calc|compute|what\s+is|what's|how\s+much\s+is)?\s*-?\d+(?:\.\d+)?\s*(?:plus|minus|times|multiplied\s+by|x|into|divided\s+by|over|\+|-|\*|×|/|÷)\s*-?\d+(?:\.\d+)?(?:\s*)$"""
-            ).matches(question) ||
-            Regex(
-                """^(?:calculate|what\s+is|what's)?\s*-?\d+(?:\.\d+)?\s*(?:percent|%)\s+of\s+-?\d+(?:\.\d+)?$"""
-            ).matches(question)) {
-            return true
-        }
-
-        return false
-    }
-
-    /**
-     * Classification-only normalization. Unlike process(), this deliberately
-     * does not convert commands such as "search for ..." or "watch ...".
-     */
-    private fun normalizeQuestionForClassification(input: String): String {
 
         var text = input
             .lowercase()
@@ -711,26 +587,71 @@ object IntentEngine {
         text = text
             .replace("what's", "what is")
             .replace("whats", "what is")
-            .replace("today's", "today is")
-            .replace("todays", "today is")
+            .replace("who's", "who is")
+            .replace("whos", "who is")
             .replace("i'm", "i am")
             .replace("you're", "you are")
             .replace("can't", "cannot")
             .replace("don't", "do not")
             .replace("it's", "it is")
-            .replace(Regex("""[,.!?;:]+"""), " ")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
+            .replace("there's", "there is")
 
         text = text.replace(
+            Regex("""[,.!?;:]+"""),
+            " "
+        )
+
+        // Natural information-request wrappers. Do not remove meaningful
+        // words such as current, now, former, ex, previous, or a year.
+        text = text.replace(
             Regex(
-                """^(?:can|could|would|will)\s+you\s+(?:please\s+)?"""
+                """^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:tell\s+me|explain|describe|give\s+me|say|answer|identify)\s+"""
             ),
             ""
         )
 
         text = text.replace(
-            Regex("""^(?:please|pls|plz|kindly)\s+"""),
+            Regex(
+                """^(?:tell\s+me|give\s+me)\s+about\s+"""
+            ),
+            "what is "
+        )
+
+        text = text.replace(
+            Regex(
+                """^(?:tell\s+me|give\s+me)\s+"""
+            ),
+            ""
+        )
+
+        text = text.replace(
+            Regex(
+                """^(?:give\s+me\s+)?(?:information|info|details)\s+(?:about|on)\s+"""
+            ),
+            "what is "
+        )
+
+        text = text.replace(
+            Regex(
+                """^(?:do\s+you\s+know)\s+"""
+            ),
+            ""
+        )
+
+        text = text.replace(
+            Regex(
+                """^(?:i\s+want\s+to\s+know|i\s+would\s+like\s+to\s+know|i'd\s+like\s+to\s+know)\s+"""
+            ),
+            ""
+        )
+
+        text = text.replace(
+            Regex("""^please\s+"""),
+            ""
+        )
+
+        text = text.replace(
+            Regex("""\s+(?:please|pls|plz)$"""),
             ""
         )
 
@@ -740,9 +661,161 @@ object IntentEngine {
     }
 
     /**
+     * True when the input is a general/world-knowledge question rather than
+     * one of Sanya's local commands, memory questions, or teaching phrases.
+     */
+    fun isGeneralQuestion(input: String): Boolean {
+
+        val raw = normalizeQuestionBase(input)
+
+        if (raw.isEmpty()) return false
+
+        // Sanya/local control and memory questions stay with the existing
+        // command/Brain pipeline.
+        if (isProtectedLocalQuestion(raw)) {
+            return false
+        }
+
+        // Explicit commands are not knowledge questions, even if they contain
+        // words such as "can", "what", or "how".
+        if (isCommandRequest(raw)) {
+            return false
+        }
+
+        val question = normalizeQuestion(raw)
+
+        if (question.isEmpty()) return false
+
+        // Direct interrogative forms.
+        if (
+            Regex(
+                """^(?:what|who|whom|when|where|why|how|which|whose)\b"""
+            ).containsMatchIn(question)
+        ) {
+            return true
+        }
+
+        // Common information-request forms that do not begin with an
+        // interrogative word.
+        return Regex(
+            """^(?:about\s+|explain|describe|define|identify|tell\s+me\s+about|give\s+me\s+(?:information|info|details)\s+(?:about|on)|i\s+(?:want|would\s+like)\s+to\s+know)\b"""
+        ).containsMatchIn(question)
+    }
+
+    /**
+     * Marks questions whose answer can change over time. This is generic:
+     * it detects temporal language and generic public-office role wording,
+     * not particular people or countries.
+     */
+    fun isTimeSensitiveQuestion(input: String): Boolean {
+
+        val question = normalizeQuestion(input)
+
+        if (question.isEmpty()) return false
+
+        val historical = Regex(
+            """\b(?:former|ex|previous|past|historical|in\s+\d{4}|during\s+\d{4}|before|after)\b"""
+        ).containsMatchIn(question)
+
+        if (historical) return false
+
+        val explicitCurrent = Regex(
+            """\b(?:current|currently|latest|today|now|present|presently|serving|incumbent|at\s+present|as\s+of\s+now)\b"""
+        ).containsMatchIn(question)
+
+        if (explicitCurrent) return true
+
+        // "Who is the president of X?" conventionally asks for the current
+        // office holder unless a historical qualifier is supplied.
+        return Regex(
+            """^who\b.*\b(?:president|prime\s+minister|chief\s+minister|governor|chancellor|king|queen|pope|chief\s+justice|ceo|chairman|mayor)\b"""
+        ).containsMatchIn(question)
+    }
+
+    private fun normalizeQuestionBase(input: String): String {
+
+        var text = input
+            .lowercase()
+            .trim()
+
+        if (text.isEmpty()) return ""
+
+        text = text.replace(
+            Regex(
+                """\b(?:hey\s+)?(?:sanya|sania|saniya|sonya|sonia|sunya)\b"""
+            ),
+            " "
+        )
+
+        text = text
+            .replace(Regex("""[,.!?;:]+"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+        return text
+    }
+
+    private fun isProtectedLocalQuestion(
+        raw: String
+    ): Boolean {
+
+        val q = normalizeQuestion(raw)
+
+        if (q.isEmpty()) return false
+
+        if (
+            Regex(
+                """^(?:what|what's|which)\b.*\b(?:time|date|day|month|year|battery)\b"""
+            ).containsMatchIn(q)
+        ) return true
+
+        if (
+            Regex(
+                """^(?:what|who|how)\b.*\b(?:my|mine)\b"""
+            ).containsMatchIn(q)
+        ) return true
+
+        if (
+            Regex(
+                """^(?:who\s+am\s+i|what\s+is\s+my\s+name|what\s+is\s+my\s+favourite|what\s+is\s+my\s+favorite)\b"""
+            ).containsMatchIn(q)
+        ) return true
+
+        if (
+            Regex(
+                """^(?:how\s+are\s+you|what\s+can\s+you\s+do|help)$"""
+            ).matches(q)
+        ) return true
+
+        if (
+            Regex(
+                """\b(?:my\s+notes?|my\s+todo|my\s+to-do|my\s+list|brain|what\s+did\s+you\s+(?:learn|know))\b"""
+            ).containsMatchIn(q)
+        ) return true
+
+        // Existing calculator intent should remain with CommandParser/AIBrain.
+        if (
+            Regex(
+                """^(?:what\s+(?:is|are)|calculate|compute|how\s+much\s+is)\b.*(?:\d|plus|minus|times|divided|multiplied|percent)"""
+            ).containsMatchIn(q)
+        ) return true
+
+        return false
+    }
+
+    private fun isCommandRequest(
+        raw: String
+    ): Boolean {
+
+        val command = Regex(
+            """^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:open|launch|start|run|load|call|phone|ring|dial|message|text|sms|send|whatsapp|play|watch|search|google|find|look\s+up|navigate|go\s+to|take\s+me\s+to|set|turn|switch|enable|disable|add|put|remove|delete|clear|read|show\s+my|remember|remind|schedule|create|write|take\s+(?:a\s+)?(?:photo|picture|selfie)|calculate|compute|repeat|again)\b"""
+        )
+
+        return command.containsMatchIn(raw)
+    }
+
+    /**
      * Returns possible interpretations.
-     *
-     * The first result is always the primary interpretation.
      */
     fun alternatives(input: String): List<String> {
 
@@ -752,13 +825,7 @@ object IntentEngine {
             return emptyList()
         }
 
-        val results = mutableListOf<String>()
-
-        results.add(primary)
-
-        // ---------------------------------------------------------
-        // PLAY / WATCH
-        // ---------------------------------------------------------
+        val results = mutableListOf(primary)
 
         if (primary.startsWith("watch ")) {
             results.add(
@@ -766,19 +833,11 @@ object IntentEngine {
             )
         }
 
-        // ---------------------------------------------------------
-        // FIND
-        // ---------------------------------------------------------
-
         if (primary.startsWith("find ")) {
             results.add(
                 "search " + primary.removePrefix("find ").trim()
             )
         }
-
-        // ---------------------------------------------------------
-        // LOOK UP
-        // ---------------------------------------------------------
 
         if (primary.startsWith("look up ")) {
             results.add(
