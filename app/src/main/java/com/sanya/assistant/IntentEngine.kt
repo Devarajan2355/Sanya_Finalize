@@ -561,6 +561,46 @@ object IntentEngine {
     }
 
     /**
+     * Returns a question string suitable for local knowledge matching.
+     * Existing command transformations are reused first so wake words and
+     * polite wrappers are removed consistently with the rest of Sanya.
+     */
+    fun normalizeQuestion(input: String): String {
+
+        var text = process(input)
+
+        if (text.isEmpty()) return ""
+
+        text = text
+            .replace(Regex("""^(?:tell\s+me|give\s+me)\s+"""), "")
+            .replace(Regex("""^(?:do\s+you\s+know)\s+"""), "")
+            .replace(Regex("""^(?:could\s+you|would\s+you|can\s+you)\s+"""), "")
+            .replace(Regex("""\s+(?:please|pls|plz)$"""), "")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+        return text
+    }
+
+    /**
+     * True only for an unresolved natural-language question.
+     * Normal Sanya commands are checked by CommandParser first, so commands
+     * such as "what is the time" or "how do I get to Chennai" still follow
+     * their existing command paths.
+     */
+    fun isGeneralQuestion(input: String): Boolean {
+
+        val question =
+            normalizeQuestion(input)
+
+        if (question.isEmpty()) return false
+
+        return Regex(
+            """^(?:what|who|whom|when|where|why|how|which|whose|is|are|was|were|am|can|could|will|would|should|shall|has|have|had|do|does|did)\b"""
+        ).containsMatchIn(question)
+    }
+
+    /**
      * Returns possible interpretations.
      *
      * The first result is always the primary interpretation.
