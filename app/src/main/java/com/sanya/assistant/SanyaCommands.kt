@@ -906,6 +906,11 @@ class StepRunner(
     private var lastCommand = ""
     private var lastUnknown = ""
 
+    // Most recent general-knowledge exchange. Kept in memory only so a
+    // follow-up can be handled conversationally without changing Brain.
+    private var lastKnowledgeQuestion = ""
+    private var lastKnowledgeAnswer = ""
+
     // Web lookups and local knowledge I/O must never block the UI thread.
     private val knowledgeExecutor =
         Executors.newSingleThreadExecutor()
@@ -956,11 +961,9 @@ class StepRunner(
     // OR the offline AI brain can answer it.
     fun understands(raw: String): Boolean {
 
-        // General knowledge questions are deliberately checked before the
-        // broad command parser. This prevents a natural question such as
-        // "who is the president of India" from being consumed by an older
-        // command/teaching rule. Existing Sanya-specific questions are
-        // protected inside IntentEngine and continue through the command path.
+        // Natural-language questions must bypass the broad command parser.
+        // Otherwise phrases such as "who is the president of India" can be
+        // mistaken for older meaning/teaching rules.
         if (IntentEngine.isGeneralQuestion(raw)) {
             return true
         }
@@ -978,16 +981,16 @@ class StepRunner(
     }
 
     // Returns how many normal command steps will run.
-    // General knowledge questions are routed before command parsing;
-    // protected Sanya questions still use the existing command parser.
+    // If the normal parser cannot understand the command,
+    // the offline AI brain gets a chance to answer it.
     fun handle(raw: String): Int {
 
         // ---------------------------------------------------------
         // General knowledge question
         // ---------------------------------------------------------
-        // This MUST happen before CommandParser.parse(). The parser contains
-        // intentionally broad natural-language rules, so allowing it to run
-        // first can misclassify a knowledge question.
+        // MUST be checked before CommandParser.parse(). The command parser
+        // contains intentionally broad natural-language/teaching patterns.
+        // A real question should never be redirected to Step.Mean.
 
         if (IntentEngine.isGeneralQuestion(raw)) {
             answerGeneralQuestion(raw)
@@ -1065,17 +1068,18 @@ class StepRunner(
         knowledgeExecutor.execute {
 
             try {
-                // 1. Learned local knowledge always wins.
+                // 1. Reuse only validated local knowledge.
                 val local =
                     KnowledgeStore.find(ctx, question)
 
                 if (local != null) {
+                    rememberKnowledge(question, local.answer)
                     safeSay(local.answer)
                     return@execute
                 }
 
-                // 2. Preserve Sanya's existing offline AIBrain as a second
-                // local source. This keeps all previous built-in answers.
+                // 2. The existing offline brain still gets first chance for
+                // supported built-in facts/calculation-style questions.
                 val builtIn =
                     AIBrain.answer(raw)
 
@@ -1085,11 +1089,12 @@ class StepRunner(
                         question,
                         builtIn
                     )
+                    rememberKnowledge(question, builtIn)
                     safeSay(builtIn)
                     return@execute
                 }
 
-                // 3. No local answer: internet is required for a new lookup.
+                // 3. New knowledge requires a network connection.
                 if (!online()) {
                     safeSay(
                         "I don't know that yet, and I can't search the internet right now."
@@ -1097,7 +1102,8 @@ class StepRunner(
                     return@execute
                 }
 
-                // 4. Search the web and extract a short answer.
+                // 4. WebSearch dynamically resolves people, offices,
+                // organizations, places, and other knowledge entities.
                 val answer =
                     WebSearch.answer(question)
 
@@ -1106,14 +1112,14 @@ class StepRunner(
                     return@execute
                 }
 
-                // 5. Cache it locally for future offline answers.
+                // 5. Cache only a validated answer.
                 KnowledgeStore.save(
                     ctx,
                     question,
                     answer
                 )
 
-                // 6. Use the existing Sanya speech callback.
+                rememberKnowledge(question, answer)
                 safeSay(answer)
 
             } catch (_: Throwable) {
@@ -1122,6 +1128,14 @@ class StepRunner(
                 )
             }
         }
+    }
+
+    private fun rememberKnowledge(
+        question: String,
+        answer: String
+    ) {
+        lastKnowledgeQuestion = question
+        lastKnowledgeAnswer = answer
     }
 
     private fun safeSay(text: String) {
@@ -2414,7 +2428,7 @@ class StepRunner(
  */
 object KnowledgeStore {
 
-    private const val PREFS = "sanya_knowledge"
+    private const val PREFS = "sanya_knowledge_v2"
     private const val Q_PREFIX = "q:"
     private const val A_PREFIX = "a:"
     private const val T_PREFIX = "t:"
@@ -2454,14 +2468,21 @@ object KnowledgeStore {
                 val answer =
                     prefs.getString(A_PREFIX + exactId, null)
 
-                if (!answer.isNullOrBlank()) {
+                val timestamp =
+                    prefs.getLong(
+                        T_PREFIX + exactId,
+                        0L
+                    )
+
+                if (
+                    !answer.isNullOrBlank() &&
+                    isFresh(normalized, timestamp) &&
+                    WebSearch.isUsableAnswer(normalized, answer)
+                ) {
                     return@runCatching Entry(
                         exactQuestion,
                         answer,
-                        prefs.getLong(
-                            T_PREFIX + exactId,
-                            0L
-                        ),
+                        timestamp,
                         exactId
                     )
                 }
@@ -2486,7 +2507,17 @@ object KnowledgeStore {
                     prefs.getString(A_PREFIX + id, null)
                         ?: continue
 
-                if (answer.isBlank()) continue
+                val timestamp =
+                    prefs.getLong(
+                        T_PREFIX + id,
+                        0L
+                    )
+
+                if (
+                    answer.isBlank() ||
+                    !isFresh(normalized, timestamp) ||
+                    !WebSearch.isUsableAnswer(normalized, answer)
+                ) continue
 
                 val storedTokens =
                     importantTokens(storedQuestion)
@@ -2531,10 +2562,7 @@ object KnowledgeStore {
                     best = Entry(
                         storedQuestion,
                         answer,
-                        prefs.getLong(
-                            T_PREFIX + id,
-                            0L
-                        ),
+                        timestamp,
                         id
                     )
                 }
@@ -2593,6 +2621,36 @@ object KnowledgeStore {
                 )
                 .apply()
         }
+    }
+
+    private fun isFresh(
+        question: String,
+        timestamp: Long
+    ): Boolean {
+
+        if (timestamp <= 0L) {
+            return false
+        }
+
+        val q =
+            question.lowercase(Locale.getDefault())
+
+        // Current office-holders and explicitly time-sensitive questions
+        // should be refreshed regularly. This is generic and contains no
+        // predefined people or countries.
+        val dynamic =
+            Regex(
+                "(?i)\\b(?:current|currently|latest|today|now|present|serving|president|prime\\s+minister|chief\\s+minister|governor|chancellor|king|queen|pope|chief\\s+justice)\\b"
+            ).containsMatchIn(q)
+
+        val maxAge =
+            if (dynamic) {
+                12L * 60L * 60L * 1000L
+            } else {
+                30L * 24L * 60L * 60L * 1000L
+            }
+
+        return System.currentTimeMillis() - timestamp <= maxAge
     }
 
     private fun idFor(value: String): String {
@@ -2657,8 +2715,19 @@ object WebSearch {
             return null
         }
 
-        // The JSON endpoint is the preferred source because it already
-        // provides compact answer/definition/abstract fields.
+        // ---------------------------------------------------------
+        // 1. Generic Wikipedia/MediaWiki knowledge lookup.
+        // ---------------------------------------------------------
+        // No person, president, prime minister, country, or office-holder
+        // is predefined. The actual question is sent to Wikipedia search,
+        // which selects the relevant article/entity dynamically.
+        wikipediaAnswer(normalized)?.let {
+            return it
+        }
+
+        // ---------------------------------------------------------
+        // 2. DuckDuckGo Instant Answer API.
+        // ---------------------------------------------------------
         runCatching {
             val encoded =
                 URLEncoder.encode(
@@ -2685,9 +2754,9 @@ object WebSearch {
 
             for (candidate in directCandidates) {
                 val cleaned =
-                    cleanAnswer(candidate)
+                    cleanAnswer(candidate, normalized)
 
-                if (cleaned.isNotBlank()) {
+                if (isUsableAnswer(normalized, cleaned)) {
                     return cleaned
                 }
             }
@@ -2699,9 +2768,9 @@ object WebSearch {
                 findRelatedText(related)
 
             val cleanedRelated =
-                cleanAnswer(relatedText)
+                cleanAnswer(relatedText, normalized)
 
-            if (cleanedRelated.isNotBlank()) {
+            if (isUsableAnswer(normalized, cleanedRelated)) {
                 return cleanedRelated
             }
 
@@ -2710,28 +2779,115 @@ object WebSearch {
             return it
         }
 
-        // DuckDuckGo explicitly notes that its Instant Answer API is not a
-        // full search-results API, so use its HTML search as a practical
-        // no-key fallback for deeper questions.
+        // ---------------------------------------------------------
+        // 3. DuckDuckGo HTML search fallback.
+        // ---------------------------------------------------------
         return runCatching {
-            val encoded =
-                URLEncoder.encode(
-                    normalized,
-                    "UTF-8"
-                )
+            val queries = mutableListOf(normalized)
 
-            val url =
-                "https://html.duckduckgo.com/html/?q=$encoded"
+            if (
+                Regex(
+                    "(?i)^(?:who is|who's|what is)\\s+(?:the\\s+)?(?:current\\s+)?[a-z0-9 .'-]+$"
+                ).matches(normalized)
+            ) {
+                queries.add("current $normalized")
+            }
 
-            val html =
-                get(url)
-                    ?: return@runCatching null
+            for (query in queries.distinct()) {
+                val encoded =
+                    URLEncoder.encode(
+                        query,
+                        "UTF-8"
+                    )
 
-            extractFirstSnippet(html)
+                val url =
+                    "https://html.duckduckgo.com/html/?q=$encoded"
+
+                val html =
+                    get(url)
+                        ?: continue
+
+                val candidates =
+                    extractSnippets(html, normalized)
+
+                for (candidate in candidates) {
+                    if (isUsableAnswer(normalized, candidate)) {
+                        return@runCatching candidate
+                    }
+                }
+            }
+
+            null
         }.getOrNull()
     }
 
-    fun cleanAnswer(text: String?): String {
+    fun isUsableAnswer(
+        question: String,
+        answer: String?
+    ): Boolean {
+
+        if (answer.isNullOrBlank()) {
+            return false
+        }
+
+        val cleaned =
+            cleanAnswer(
+                answer,
+                question
+            )
+
+        if (cleaned.isBlank()) {
+            return false
+        }
+
+        if (cleaned.length < 3) {
+            return false
+        }
+
+        val q =
+            IntentEngine.normalizeQuestion(question)
+                .lowercase(Locale.getDefault())
+
+        val a =
+            cleaned.lowercase(Locale.getDefault())
+
+        // Reject an answer that is basically just the spoken question again.
+        val qWords =
+            q.split(Regex("\\s+"))
+                .filter { it.length > 2 }
+                .toSet()
+
+        val aWords =
+            a.split(Regex("\\s+"))
+                .map { it.trim(' ', '.', ',', '?', '!', ':', ';', '\"', '\'') }
+                .filter { it.length > 2 }
+                .toSet()
+
+        if (qWords.isNotEmpty()) {
+            val overlap =
+                qWords.intersect(aWords).size.toDouble() / qWords.size.toDouble()
+
+            if (overlap >= 1.0 && a.length <= q.length + 35) {
+                return false
+            }
+        }
+
+        // Search snippets containing repeated "name of ..." fragments are
+        // often page-navigation text, not the requested answer.
+        if (
+            Regex("(?i)\\bname of the\\b").containsMatchIn(a) &&
+            !Regex("(?i)\\bis\\s+[A-Z][a-z]").containsMatchIn(cleaned)
+        ) {
+            return false
+        }
+
+        return true
+    }
+
+    fun cleanAnswer(
+        text: String?,
+        question: String? = null
+    ): String {
 
         if (text.isNullOrBlank()) {
             return ""
@@ -2739,12 +2895,17 @@ object WebSearch {
 
         var cleaned =
             text
+                .replace(Regex("<script.*?</script>", RegexOption.IGNORE_CASE), " ")
+                .replace(Regex("<style.*?</style>", RegexOption.IGNORE_CASE), " ")
                 .replace(Regex("<[^>]+>"), " ")
                 .replace("&nbsp;", " ")
                 .replace("&amp;", "&")
                 .replace("&quot;", "\"")
                 .replace("&#39;", "'")
                 .replace("&apos;", "'")
+                .replace("&#x27;", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
                 .replace(Regex("\\s+"), " ")
                 .trim()
 
@@ -2752,9 +2913,32 @@ object WebSearch {
             return ""
         }
 
-        // Keep the answer voice-friendly: maximum two sentences and about
-        // 500 characters. This prevents whole search pages/abstracts being
-        // spoken aloud.
+        // Remove exact query echo at the beginning, which is common in HTML
+        // search snippets and sounds terrible through TTS.
+        if (!question.isNullOrBlank()) {
+            val q =
+                IntentEngine.normalizeQuestion(question)
+
+            if (q.isNotBlank()) {
+                cleaned =
+                    cleaned.replace(
+                        Regex(
+                            "(?i)^\\s*${Regex.escape(q)}[\\s:,-]*"
+                        ),
+                        ""
+                    )
+            }
+        }
+
+        // Collapse directly repeated phrases/words introduced by snippets.
+        repeat(3) {
+            cleaned =
+                cleaned.replace(
+                    Regex("(?i)\\b([^.!?]{2,80})\\s+\\1\\b"),
+                    "$1"
+                )
+        }
+
         val sentences =
             Regex("(?<=[.!?])\\s+")
                 .split(cleaned)
@@ -2768,15 +2952,163 @@ object WebSearch {
                     .trim()
         }
 
-        if (cleaned.length > 500) {
+        if (cleaned.length > 400) {
             cleaned =
                 cleaned
-                    .take(497)
+                    .take(397)
                     .trimEnd()
                     .plus("...")
         }
 
         return cleaned
+    }
+
+    private fun wikipediaAnswer(
+        question: String
+    ): String? {
+
+        val query = wikipediaQuery(question)
+
+        if (query.isBlank()) {
+            return null
+        }
+
+        val queries = linkedSetOf(query)
+
+        // For former/ex/historical people, also search the natural historical
+        // form. This is generic and does not contain any predefined names.
+        if (Regex("(?i)\\b(?:former|ex|previous|past|last|historical|in\\s+\\d{4})\\b"))
+                .containsMatchIn(query)) {
+            val subject = query
+                .replace(Regex("(?i)^(?:who|what)\\s+(?:is|was)\\s+"), "")
+                .trim()
+
+            if (subject.isNotBlank()) {
+                queries.add("list of $subject")
+            }
+        }
+
+        for (searchQuery in queries) {
+            val encoded =
+                URLEncoder.encode(searchQuery, "UTF-8")
+
+            val searchUrl =
+                "https://en.wikipedia.org/w/api.php" +
+                    "?action=query&list=search" +
+                    "&srsearch=$encoded&format=json&utf8=1&srlimit=5"
+
+            val raw =
+                get(searchUrl)
+                    ?: continue
+
+            val json =
+                runCatching { JSONObject(raw) }.getOrNull()
+                    ?: continue
+
+            val search =
+                json.optJSONObject("query")
+                    ?.optJSONArray("search")
+                    ?: continue
+
+            for (i in 0 until search.length()) {
+                val hit =
+                    search.optJSONObject(i)
+                        ?: continue
+
+                val title =
+                    hit.optString("title").trim()
+
+                if (title.isBlank()) {
+                    continue
+                }
+
+                val slug =
+                    URLEncoder.encode(
+                        title.replace(' ', '_'),
+                        "UTF-8"
+                    )
+
+                val pageUrl =
+                    "https://en.wikipedia.org/api/rest_v1/page/summary/$slug"
+
+                val pageRaw =
+                    get(pageUrl)
+                        ?: continue
+
+                val page =
+                    runCatching { JSONObject(pageRaw) }.getOrNull()
+                        ?: continue
+
+                val extract =
+                    page.optString("extract").trim()
+
+                if (extract.isBlank()) {
+                    continue
+                }
+
+                val answer =
+                    answerFromWikipedia(
+                        question,
+                        extract
+                    )
+
+                if (isUsableAnswer(question, answer)) {
+                    return answer
+                }
+            }
+        }
+
+        return null
+    }
+
+    private fun wikipediaQuery(
+        question: String
+    ): String {
+
+        return IntentEngine.normalizeQuestion(question)
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun answerFromWikipedia(
+        question: String,
+        extract: String
+    ): String {
+
+        val cleaned =
+            cleanAnswer(extract, question)
+
+        if (cleaned.isBlank()) {
+            return ""
+        }
+
+        val sentences =
+            Regex("(?<=[.!?])\\s+")
+                .split(cleaned)
+                .filter { it.isNotBlank() }
+
+        if (sentences.isEmpty()) {
+            return cleaned
+        }
+
+        val q =
+            question.lowercase(Locale.getDefault())
+
+        // For who/what identity questions, prefer a sentence that actually
+        // defines the entity instead of returning a later biography detail.
+        if (q.startsWith("who ") || q.startsWith("what ")) {
+            val definition =
+                sentences.firstOrNull { sentence ->
+                    Regex("(?i)\\b(?:is|was|are|were)\\b")
+                        .containsMatchIn(sentence)
+                }
+
+            if (!definition.isNullOrBlank()) {
+                return definition.trim()
+            }
+        }
+
+        return sentences.take(2).joinToString(" ").trim()
     }
 
     private fun get(urlString: String): String? {
@@ -2852,9 +3184,10 @@ object WebSearch {
         return null
     }
 
-    private fun extractFirstSnippet(
-        html: String
-    ): String? {
+    private fun extractSnippets(
+        html: String,
+        question: String
+    ): List<String> {
 
         val patterns = listOf(
             Regex(
@@ -2865,20 +3198,23 @@ object WebSearch {
             )
         )
 
+        val results = mutableListOf<String>()
+
         for (pattern in patterns) {
-            val match =
-                pattern.find(html)
-                    ?: continue
+            for (match in pattern.findAll(html).take(8)) {
+                val cleaned =
+                    cleanAnswer(
+                        match.groupValues[1],
+                        question
+                    )
 
-            val cleaned =
-                cleanAnswer(match.groupValues[1])
-
-            if (cleaned.isNotBlank()) {
-                return cleaned
+                if (cleaned.isNotBlank() && cleaned !in results) {
+                    results.add(cleaned)
+                }
             }
         }
 
-        return null
+        return results
     }
 }
 
