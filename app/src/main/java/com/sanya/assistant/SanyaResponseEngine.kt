@@ -3,471 +3,187 @@ package com.sanya.assistant
 /**
  * SanyaResponseEngine
  *
- * Converts retrieved knowledge into a more natural, human-like response.
+ * Validates retrieved knowledge and turns it into a clean, speakable reply.
  *
- * This is intentionally separate from:
- * - IntentEngine.kt       -> understands the user's request
- * - SanyaCommands.kt      -> executes commands / retrieves knowledge
- * - AIBrain.kt            -> offline/basic knowledge
+ * Used by StepRunner (SanyaCommands.kt):
+ *   SanyaResponseEngine.answer(question, retrievedText)  -> String?
  *
- * It does NOT contain predefined names of presidents, prime ministers,
- * celebrities, or other people.
+ * Returns null when the retrieved text is empty or clearly unrelated to the
+ * question, so the caller can say "I couldn't find a reliable answer".
+ *
+ * Separate from:
+ * - IntentEngine.kt   -> decides whether the input is a general question
+ * - SanyaCommands.kt  -> retrieves knowledge (cache, AIBrain, WebSearch)
+ * - AIBrain.kt        -> built-in offline facts
+ *
+ * Contains no hard-coded names of presidents, ministers, celebrities, etc.
+ *
+ * IMPORTANT: answer() must be idempotent. StepRunner re-runs cached answers
+ * through it, so running it on its own output must not change the text.
  */
 object SanyaResponseEngine {
 
+    private const val NO_ANSWER = "I couldn't find a reliable answer to that."
+
     /**
-     * Main entry point.
+     * Main entry point used by SanyaCommands.
      *
-     * @param question Original user question
-     * @param answer Raw answer retrieved from the knowledge system
+     * @param question  the user's question (any case)
+     * @param retrieved raw text from the knowledge system
+     * @return a natural reply that keeps the original capitalisation,
+     *         or null if the text is empty / unrelated.
      */
-    fun createResponse(
-        question: String,
-        answer: String
-    ): String {
+    fun answer(question: String, retrieved: String): String? {
 
-        val q = clean(question)
-        val a = clean(answer)
+        val q = lower(question)
+        val text = removeNoise(retrieved)
 
-        if (a.isEmpty()) {
-            return "I couldn't find a reliable answer to that."
-        }
+        if (text.isEmpty()) return null
 
-        // Reject obvious bad retrievals such as:
-        // "What is the capital of Japan?"
-        // -> "Capital punishment is a legal penalty in Japan."
-        if (looksUnrelated(q, a)) {
-            return "I couldn't find a reliable answer to that."
-        }
+        // Reject bad retrievals such as
+        //   "What is the capital of Japan?" -> "Capital punishment is ..."
+        if (looksUnrelated(q, text.lowercase())) return null
 
-        // Remove common API/search noise.
-        val cleanedAnswer = removeNoise(a)
-
-        if (cleanedAnswer.isEmpty()) {
-            return "I couldn't find a reliable answer to that."
-        }
-
-        return makeNaturalResponse(q, cleanedAnswer)
+        return makeNaturalResponse(q, text)
     }
 
     /**
-     * Makes the retrieved information sound conversational.
+     * Convenience wrapper that always returns speakable text.
      */
-    private fun makeNaturalResponse(
-        question: String,
-        answer: String
-    ): String {
-
-        val q = question.lowercase()
-
-        return when {
-
-            // -----------------------------------------------------
-            // Definition / "What is..."
-            // -----------------------------------------------------
-
-            q.matches(
-                Regex(
-                    """^(?:what\s+is|what\s+are|define|explain)\b.*"""
-                )
-            ) -> {
-                naturalDefinition(answer)
-            }
-
-            // -----------------------------------------------------
-            // Person / "Who..."
-            // -----------------------------------------------------
-
-            q.matches(
-                Regex(
-                    """^(?:who|whom)\b.*"""
-                )
-            ) -> {
-                naturalPersonAnswer(answer)
-            }
-
-            // -----------------------------------------------------
-            // Time / date
-            // -----------------------------------------------------
-
-            q.matches(
-                Regex(
-                    """^when\b.*"""
-                )
-            ) -> {
-                naturalTimeAnswer(answer)
-            }
-
-            // -----------------------------------------------------
-            // Location
-            // -----------------------------------------------------
-
-            q.matches(
-                Regex(
-                    """^where\b.*"""
-                )
-            ) -> {
-                naturalLocationAnswer(answer)
-            }
-
-            // -----------------------------------------------------
-            // Why
-            // -----------------------------------------------------
-
-            q.matches(
-                Regex(
-                    """^why\b.*"""
-                )
-            ) -> {
-                naturalExplanation(answer)
-            }
-
-            // -----------------------------------------------------
-            // How
-            // -----------------------------------------------------
-
-            q.matches(
-                Regex(
-                    """^how\b.*"""
-                )
-            ) -> {
-                naturalHowAnswer(answer)
-            }
-
-            // -----------------------------------------------------
-            // Which
-            // -----------------------------------------------------
-
-            q.matches(
-                Regex(
-                    """^which\b.*"""
-                )
-            ) -> {
-                naturalFactAnswer(answer)
-            }
-
-            // -----------------------------------------------------
-            // General conversational request
-            // -----------------------------------------------------
-
-            else -> {
-                answer
-            }
-        }
-    }
+    fun createResponse(question: String, retrieved: String): String =
+        answer(question, retrieved) ?: NO_ANSWER
 
     // -------------------------------------------------------------
-    // Natural response helpers
+    // Natural response
     // -------------------------------------------------------------
 
-    private fun naturalDefinition(
-        answer: String
-    ): String {
+    private fun makeNaturalResponse(question: String, retrieved: String): String {
 
-        val text = sentence(answer)
+        val text = sentence(retrieved)
 
-        return if (
-            text.startsWith("Python is", ignoreCase = true) ||
-            text.startsWith("Artificial intelligence is", ignoreCase = true) ||
-            text.startsWith("AI is", ignoreCase = true)
-        ) {
-            text
+        // Already a full sentence ("The capital of India is New Delhi.")
+        // or already wrapped by an earlier pass: leave it alone.
+        if (alreadyConversational(text)) return text
+
+        // A bare name or phrase in answer to "who ..." ("Droupadi Murmu").
+        val isWho = question.startsWith("who ") || question.startsWith("whom ")
+        val wordCount = text.trimEnd('.', '!', '?').split(" ").size
+
+        return if (isWho && wordCount <= 5) {
+            "That would be $text"
         } else {
-            "Sure. $text"
-        }
-    }
-
-    private fun naturalPersonAnswer(
-        answer: String
-    ): String {
-
-        val text = sentence(answer)
-
-        return if (
-            text.startsWith("He ", ignoreCase = true) ||
-            text.startsWith("She ", ignoreCase = true) ||
-            text.startsWith("They ", ignoreCase = true) ||
-            text.contains(" is ", ignoreCase = true)
-        ) {
             text
-        } else {
-            "The answer is $text"
         }
     }
 
-    private fun naturalTimeAnswer(
-        answer: String
-    ): String {
+    private val CONVERSATIONAL = Regex(
+        """(?i)\b(?:is|are|was|were|has|had|have|means|refers|born|known|called|located|founded|became|serves?|served|would\s+be)\b"""
+    )
 
-        return sentence(answer)
-    }
-
-    private fun naturalLocationAnswer(
-        answer: String
-    ): String {
-
-        return sentence(answer)
-    }
-
-    private fun naturalExplanation(
-        answer: String
-    ): String {
-
-        return sentence(answer)
-    }
-
-    private fun naturalHowAnswer(
-        answer: String
-    ): String {
-
-        return sentence(answer)
-    }
-
-    private fun naturalFactAnswer(
-        answer: String
-    ): String {
-
-        return sentence(answer)
-    }
+    private fun alreadyConversational(text: String): Boolean =
+        CONVERSATIONAL.containsMatchIn(text)
 
     // -------------------------------------------------------------
-    // Answer cleaning
+    // Text cleaning
     // -------------------------------------------------------------
 
-    private fun removeNoise(
-        input: String
-    ): String {
+    private fun removeNoise(input: String): String {
 
         var text = input.trim()
 
-        // Remove common search/API prefixes.
+        // Common search/API prefixes.
         text = text.replace(
-            Regex(
-                """^(?:answer|result|definition|description)\s*:\s*"""
-            ),
+            Regex("""(?i)^(?:answer|result|definition|description)\s*:\s*"""),
             ""
         )
 
-        // Remove repeated whitespace.
-        text = text.replace(
-            Regex("""\s+"""),
-            " "
-        )
+        // Repeated whitespace.
+        text = text.replace(Regex("""\s+"""), " ")
 
-        // Remove repeated punctuation.
-        text = text.replace(
-            Regex("""([.!?])\1+"""),
-            "$1"
-        )
+        // Repeated sentence punctuation (but keep "..." from truncation).
+        text = text.replace(Regex("""([!?])\1+"""), "$1")
 
         return text.trim()
     }
 
-    private fun sentence(
-        input: String
-    ): String {
+    private fun sentence(input: String): String {
 
-        var text = input.trim()
+        val text = input.trim().replace(Regex("""\s+"""), " ")
 
-        if (text.isEmpty()) {
-            return ""
+        if (text.isEmpty()) return ""
+
+        return if (text.endsWith(".") || text.endsWith("?") || text.endsWith("!")) {
+            text
+        } else {
+            "$text."
         }
-
-        text = text.replace(
-            Regex("""\s+"""),
-            " "
-        )
-
-        if (
-            !text.endsWith(".") &&
-            !text.endsWith("?") &&
-            !text.endsWith("!")
-        ) {
-            text += "."
-        }
-
-        return text
     }
 
-    private fun clean(
-        input: String
-    ): String {
-
-        return input
-            .lowercase()
-            .replace(
-                Regex("""\s+"""),
-                " "
-            )
-            .trim()
-    }
+    private fun lower(input: String): String =
+        input.lowercase().replace(Regex("""\s+"""), " ").trim()
 
     // -------------------------------------------------------------
-    // Retrieval validation
+    // Retrieval validation (all lowercase inputs)
     // -------------------------------------------------------------
 
     /**
-     * Detects obvious cases where the retrieved answer does not match
-     * the user's question.
-     *
-     * This is deliberately generic and does not contain names of
-     * specific people.
+     * Detects obvious cases where the retrieved text does not match
+     * the question. Deliberately generic.
      */
-    private fun looksUnrelated(
-        question: String,
-        answer: String
-    ): Boolean {
+    private fun looksUnrelated(question: String, answer: String): Boolean {
 
-        if (question.isEmpty() || answer.isEmpty()) {
-            return true
-        }
-
-        val q = question.lowercase()
-        val a = answer.lowercase()
+        if (question.isEmpty() || answer.isEmpty()) return true
 
         // ---------------------------------------------------------
-        // Capital-city question
+        // Capital-city question answered with "capital punishment"
         // ---------------------------------------------------------
 
         if (
-            q.matches(
-                Regex(
-                    """^(?:what\s+is\s+)?the\s+capital(?:\s+city)?\s+of\s+.+"""
-                )
-            ) ||
-            q.matches(
-                Regex(
-                    """^what\s+is\s+the\s+capital(?:\s+city)?\s+of\s+.+"""
-                )
-            )
+            Regex("""^(?:what\s+is\s+)?the\s+capital(?:\s+city)?\s+of\s+.+""")
+                .matches(question)
         ) {
-
-            // An answer containing "capital punishment" is almost
-            // certainly a bad search result for a capital-city query.
             if (
-                a.contains("capital punishment") ||
-                a.contains("legal penalty") ||
-                a.contains("death penalty")
+                answer.contains("capital punishment") ||
+                answer.contains("legal penalty") ||
+                answer.contains("death penalty")
             ) {
                 return true
             }
         }
 
         // ---------------------------------------------------------
-        // "Who" question
+        // Keyword overlap: if none of the question's important words
+        // appear in the answer, the result is suspicious.
         // ---------------------------------------------------------
 
-        if (
-            q.matches(
-                Regex("""^who\b.*""")
-            )
-        ) {
+        val normalizedQuestion = squash(question)
+        val normalizedAnswer = squash(answer)
 
-            // Reject answers that are obviously generic unrelated
-            // descriptions rather than a person/entity answer.
-            if (
-                a.startsWith("what is ") &&
-                !a.contains(" is ")
-            ) {
-                return true
+        if (normalizedQuestion.isEmpty()) return false
+
+        val words = normalizedQuestion
+            .split(" ")
+            .filter { it.length >= 4 && it !in QUESTION_WORDS }
+
+        if (words.size >= 3) {
+            val matching = words.count {
+                normalizedAnswer.contains(Regex("""\b${Regex.escape(it)}\b"""))
             }
-        }
-
-        // ---------------------------------------------------------
-        // Query echo detection
-        // ---------------------------------------------------------
-
-        val normalizedQuestion =
-            q.replace(
-                Regex("""[^a-z0-9\s]"""),
-                " "
-            )
-                .replace(
-                    Regex("""\s+"""),
-                    " "
-                )
-                .trim()
-
-        val normalizedAnswer =
-            a.replace(
-                Regex("""[^a-z0-9\s]"""),
-                " "
-            )
-                .replace(
-                    Regex("""\s+"""),
-                    " "
-                )
-                .trim()
-
-        if (normalizedQuestion.isNotEmpty()) {
-
-            val words =
-                normalizedQuestion
-                    .split(" ")
-                    .filter {
-                        it.length >= 4 &&
-                            it !in QUESTION_WORDS
-                    }
-
-            if (words.isNotEmpty()) {
-
-                val matchingWords =
-                    words.count {
-                        normalizedAnswer.contains(
-                            Regex(
-                                """\b${Regex.escape(it)}\b"""
-                            )
-                        )
-                    }
-
-                // If practically none of the important question
-                // words occur in the answer, the result is suspicious.
-                if (
-                    words.size >= 3 &&
-                    matchingWords == 0
-                ) {
-                    return true
-                }
-            }
+            if (matching == 0) return true
         }
 
         return false
     }
 
-    private val QUESTION_WORDS =
-        setOf(
-            "what",
-            "when",
-            "where",
-            "who",
-            "whom",
-            "whose",
-            "which",
-            "why",
-            "how",
-            "is",
-            "are",
-            "was",
-            "were",
-            "the",
-            "a",
-            "an",
-            "of",
-            "to",
-            "in",
-            "on",
-            "for",
-            "does",
-            "did",
-            "do",
-            "can",
-            "could",
-            "would",
-            "will",
-            "please",
-            "tell",
-            "about",
-            "give",
-            "me"
-        )
+    private fun squash(s: String): String =
+        s.replace(Regex("""[^a-z0-9\s]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+    private val QUESTION_WORDS = setOf(
+        "what", "when", "where", "who", "whom", "whose", "which", "why", "how",
+        "is", "are", "was", "were", "the", "a", "an", "of", "to", "in", "on", "for",
+        "does", "did", "do", "can", "could", "would", "will",
+        "please", "tell", "about", "give", "me"
+    )
 }
