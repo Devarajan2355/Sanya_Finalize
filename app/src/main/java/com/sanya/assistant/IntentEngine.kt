@@ -756,10 +756,30 @@ object IntentEngine {
 
         if (q.isEmpty()) return false
 
+        // Teaching phrases ("when i say X i mean Y") start with "when" but are
+        // Sanya commands handled by CommandParser, not world-knowledge questions.
+        if (
+            Regex("""^when\s+i\s+say\b""").containsMatchIn(q)
+        ) return true
+
+        // Local clock/calendar questions only ("what time is it", "what is the
+        // date", "what year is it"). Real knowledge questions that merely contain
+        // one of these words ("what year did India become independent") must
+        // still reach the knowledge pipeline.
         if (
             Regex(
-                """^(?:what|what's|which)\b.*\b(?:time|date|day|month|year|battery)\b"""
-            ).containsMatchIn(q)
+                """^(?:what\s+(?:is|are)\s+(?:the\s+|today'?s\s+|today\s+|current\s+)*(?:time|date|day|month|year)(?:\s+(?:now|today|right\s+now))?|what\s+(?:time|day|month|year)\s+is\s+(?:it|today)(?:\s+now)?|which\s+day\s+is\s+(?:it|today))$"""
+            ).matches(q)
+        ) return true
+
+        // "how much battery do i have", "what is my battery"
+        if (
+            Regex("""^(?:what|how)\b.*\bbattery\b""").containsMatchIn(q)
+        ) return true
+
+        // "what is your name" is answered locally by CommandParser.
+        if (
+            Regex("""\byour\s+name\b""").containsMatchIn(q)
         ) return true
 
         if (
