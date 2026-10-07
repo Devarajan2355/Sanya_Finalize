@@ -36,6 +36,13 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlin.math.abs
 import kotlin.math.floor
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import java.security.MessageDigest
+import java.util.concurrent.Executors
+import org.json.JSONArray
+import org.json.JSONObject
 
 sealed class Step {
     data class OpenApp(val name: String) : Step()
@@ -899,6 +906,10 @@ class StepRunner(
     private var lastCommand = ""
     private var lastUnknown = ""
 
+    // Web lookups and local knowledge I/O must never block the UI thread.
+    private val knowledgeExecutor =
+        Executors.newSingleThreadExecutor()
+
     private data class Contact(
         val id: Long,
         val name: String,
@@ -954,6 +965,10 @@ class StepRunner(
             return true
         }
 
+        if (IntentEngine.isGeneralQuestion(raw)) {
+            return true
+        }
+
         return AIBrain.answer(raw) != null
     }
 
@@ -996,6 +1011,15 @@ class StepRunner(
         }
 
         // ---------------------------------------------------------
+        // General knowledge question
+        // ---------------------------------------------------------
+
+        if (IntentEngine.isGeneralQuestion(raw)) {
+            answerGeneralQuestion(raw)
+            return 1
+        }
+
+        // ---------------------------------------------------------
         // Offline AI Brain
         // ---------------------------------------------------------
 
@@ -1018,6 +1042,71 @@ class StepRunner(
         )
 
         return 0
+    }
+
+    private fun answerGeneralQuestion(raw: String) {
+
+        val question =
+            IntentEngine.normalizeQuestion(raw)
+
+        if (question.isEmpty()) {
+            safeSay("I didn't catch the question")
+            return
+        }
+
+        knowledgeExecutor.execute {
+
+            try {
+                // 1. Local knowledge always wins.
+                val local =
+                    KnowledgeStore.find(ctx, question)
+
+                if (local != null) {
+                    safeSay(local.answer)
+                    return@execute
+                }
+
+                // 2. No local answer: internet is required for a new lookup.
+                if (!online()) {
+                    safeSay(
+                        "I don't know that yet, and I can't search the internet right now."
+                    )
+                    return@execute
+                }
+
+                // 3. Search the web and extract a short answer.
+                val answer =
+                    WebSearch.answer(question)
+
+                if (answer.isNullOrBlank()) {
+                    safeSay("I couldn't find a reliable answer right now.")
+                    return@execute
+                }
+
+                // 4. Cache it locally for future offline answers.
+                KnowledgeStore.save(
+                    ctx,
+                    question,
+                    answer
+                )
+
+                // 5. Use the existing Sanya speech callback.
+                safeSay(answer)
+
+            } catch (_: Throwable) {
+                safeSay(
+                    "I couldn't answer that right now."
+                )
+            }
+        }
+    }
+
+    private fun safeSay(text: String) {
+        ui.post {
+            runCatching {
+                say(text)
+            }
+        }
     }
 
     private fun name() =
@@ -2290,6 +2379,483 @@ class StepRunner(
         say(
             "Opening ${s.what} settings"
         )
+    }
+}
+
+/**
+ * Small local knowledge cache for general questions.
+ *
+ * SharedPreferences is used deliberately here because Sanya already uses
+ * SharedPreferences for its existing lightweight memory. No new database or
+ * dependency is introduced for this feature.
+ */
+object KnowledgeStore {
+
+    private const val PREFS = "sanya_knowledge"
+    private const val Q_PREFIX = "q:"
+    private const val A_PREFIX = "a:"
+    private const val T_PREFIX = "t:"
+
+    data class Entry(
+        val question: String,
+        val answer: String,
+        val timestamp: Long,
+        internal val id: String
+    )
+
+    fun find(
+        ctx: Context,
+        question: String
+    ): Entry? {
+
+        return runCatching {
+            val prefs =
+                ctx.getSharedPreferences(
+                    PREFS,
+                    Context.MODE_PRIVATE
+                )
+
+            val normalized =
+                IntentEngine.normalizeQuestion(question)
+
+            if (normalized.isEmpty()) {
+                return@runCatching null
+            }
+
+            // Fast path: exact normalized question.
+            val exactId = idFor(normalized)
+            val exactQuestion =
+                prefs.getString(Q_PREFIX + exactId, null)
+
+            if (exactQuestion != null) {
+                val answer =
+                    prefs.getString(A_PREFIX + exactId, null)
+
+                if (!answer.isNullOrBlank()) {
+                    return@runCatching Entry(
+                        exactQuestion,
+                        answer,
+                        prefs.getLong(
+                            T_PREFIX + exactId,
+                            0L
+                        ),
+                        exactId
+                    )
+                }
+            }
+
+            // Practical fuzzy match for small wording changes.
+            val targetTokens = importantTokens(normalized)
+
+            if (targetTokens.size < 2) {
+                return@runCatching null
+            }
+
+            var best: Entry? = null
+            var bestScore = 0.0
+
+            for ((key, value) in prefs.all) {
+                if (!key.startsWith(Q_PREFIX)) continue
+
+                val id = key.removePrefix(Q_PREFIX)
+                val storedQuestion = value as? String ?: continue
+                val answer =
+                    prefs.getString(A_PREFIX + id, null)
+                        ?: continue
+
+                if (answer.isBlank()) continue
+
+                val storedTokens =
+                    importantTokens(storedQuestion)
+
+                if (storedTokens.isEmpty()) continue
+
+                val common =
+                    targetTokens.intersect(storedTokens).size
+
+                val minSize =
+                    minOf(
+                        targetTokens.size,
+                        storedTokens.size
+                    )
+
+                val maxSize =
+                    maxOf(
+                        targetTokens.size,
+                        storedTokens.size
+                    )
+
+                val score =
+                    if (minSize == 0) {
+                        0.0
+                    } else {
+                        common.toDouble() / minSize.toDouble()
+                    }
+
+                val coverage =
+                    if (maxSize == 0) {
+                        0.0
+                    } else {
+                        common.toDouble() / maxSize.toDouble()
+                    }
+
+                // Require the shorter question to be fully represented and
+                // at least two-thirds token coverage in total. This allows
+                // practical variants such as "what city is the capital of
+                // America" to reuse "what is the capital of America".
+                if (score >= 1.0 && coverage >= 0.66 && score > bestScore) {
+                    bestScore = score
+                    best = Entry(
+                        storedQuestion,
+                        answer,
+                        prefs.getLong(
+                            T_PREFIX + id,
+                            0L
+                        ),
+                        id
+                    )
+                }
+            }
+
+            best
+        }.getOrNull()
+    }
+
+    fun save(
+        ctx: Context,
+        question: String,
+        answer: String
+    ) {
+
+        runCatching {
+            val normalized =
+                IntentEngine.normalizeQuestion(question)
+
+            val cleanedAnswer =
+                WebSearch.cleanAnswer(answer)
+
+            if (
+                normalized.isEmpty() ||
+                cleanedAnswer.isBlank()
+            ) {
+                return@runCatching
+            }
+
+            val prefs =
+                ctx.getSharedPreferences(
+                    PREFS,
+                    Context.MODE_PRIVATE
+                )
+
+            // Reuse an existing exact/fuzzy record so we don't create
+            // duplicate answers for small wording variations.
+            val existing =
+                find(ctx, normalized)
+
+            val id =
+                existing?.id ?: idFor(normalized)
+
+            prefs.edit()
+                .putString(
+                    Q_PREFIX + id,
+                    normalized
+                )
+                .putString(
+                    A_PREFIX + id,
+                    cleanedAnswer
+                )
+                .putLong(
+                    T_PREFIX + id,
+                    System.currentTimeMillis()
+                )
+                .apply()
+        }
+    }
+
+    private fun idFor(value: String): String {
+        val digest =
+            MessageDigest.getInstance("SHA-256")
+                .digest(
+                    value.toByteArray(Charsets.UTF_8)
+                )
+
+        return Base64.encodeToString(
+            digest,
+            Base64.URL_SAFE or
+                Base64.NO_WRAP or
+                Base64.NO_PADDING
+        )
+    }
+
+    private fun importantTokens(
+        question: String
+    ): Set<String> {
+
+        val stopWords = setOf(
+            "what", "what's", "whats", "is", "are", "was", "were",
+            "who", "whom", "when", "where", "why", "how",
+            "can", "could", "would", "will", "should", "shall",
+            "do", "does", "did", "has", "have", "had", "the",
+            "a", "an", "of", "to", "for", "me", "please", "tell",
+            "about", "you", "know", "give"
+        )
+
+        return question
+            .lowercase(Locale.getDefault())
+            .split(Regex("\\s+"))
+            .map {
+                it.trim(
+                    ' ', '.', ',', '?', '!', ':', ';', '"', '\''
+                )
+                    .replace(Regex("[’']s$"), "")
+            }
+            .filter {
+                it.isNotEmpty() &&
+                    it !in stopWords
+            }
+            .toSet()
+    }
+}
+
+/**
+ * Free/no-key web lookup using DuckDuckGo's public Instant Answer API,
+ * with a lightweight HTML-search fallback when no Instant Answer exists.
+ */
+object WebSearch {
+
+    private const val TIMEOUT_MS = 8000
+
+    fun answer(question: String): String? {
+
+        val normalized =
+            IntentEngine.normalizeQuestion(question)
+
+        if (normalized.isBlank()) {
+            return null
+        }
+
+        // The JSON endpoint is the preferred source because it already
+        // provides compact answer/definition/abstract fields.
+        runCatching {
+            val encoded =
+                URLEncoder.encode(
+                    normalized,
+                    "UTF-8"
+                )
+
+            val url =
+                "https://api.duckduckgo.com/?q=$encoded" +
+                    "&format=json&no_html=1&skip_disambig=1"
+
+            val raw =
+                get(url)
+                    ?: return@runCatching null
+
+            val json =
+                JSONObject(raw)
+
+            val directCandidates = listOf(
+                json.optString("Answer"),
+                json.optString("Definition"),
+                json.optString("AbstractText")
+            )
+
+            for (candidate in directCandidates) {
+                val cleaned =
+                    cleanAnswer(candidate)
+
+                if (cleaned.isNotBlank()) {
+                    return cleaned
+                }
+            }
+
+            val related =
+                json.optJSONArray("RelatedTopics")
+
+            val relatedText =
+                findRelatedText(related)
+
+            val cleanedRelated =
+                cleanAnswer(relatedText)
+
+            if (cleanedRelated.isNotBlank()) {
+                return cleanedRelated
+            }
+
+            null
+        }.getOrNull()?.let {
+            return it
+        }
+
+        // DuckDuckGo explicitly notes that its Instant Answer API is not a
+        // full search-results API, so use its HTML search as a practical
+        // no-key fallback for deeper questions.
+        return runCatching {
+            val encoded =
+                URLEncoder.encode(
+                    normalized,
+                    "UTF-8"
+                )
+
+            val url =
+                "https://html.duckduckgo.com/html/?q=$encoded"
+
+            val html =
+                get(url)
+                    ?: return@runCatching null
+
+            extractFirstSnippet(html)
+        }.getOrNull()
+    }
+
+    fun cleanAnswer(text: String?): String {
+
+        if (text.isNullOrBlank()) {
+            return ""
+        }
+
+        var cleaned =
+            text
+                .replace(Regex("<[^>]+>"), " ")
+                .replace("&nbsp;", " ")
+                .replace("&amp;", "&")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&apos;", "'")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+
+        if (cleaned.isEmpty()) {
+            return ""
+        }
+
+        // Keep the answer voice-friendly: maximum two sentences and about
+        // 500 characters. This prevents whole search pages/abstracts being
+        // spoken aloud.
+        val sentences =
+            Regex("(?<=[.!?])\\s+")
+                .split(cleaned)
+                .filter { it.isNotBlank() }
+
+        if (sentences.isNotEmpty()) {
+            cleaned =
+                sentences
+                    .take(2)
+                    .joinToString(" ")
+                    .trim()
+        }
+
+        if (cleaned.length > 500) {
+            cleaned =
+                cleaned
+                    .take(497)
+                    .trimEnd()
+                    .plus("...")
+        }
+
+        return cleaned
+    }
+
+    private fun get(urlString: String): String? {
+
+        val connection =
+            URL(urlString)
+                .openConnection() as? HttpURLConnection
+                ?: return null
+
+        return try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = TIMEOUT_MS
+            connection.readTimeout = TIMEOUT_MS
+            connection.instanceFollowRedirects = true
+            connection.setRequestProperty(
+                "User-Agent",
+                "Mozilla/5.0 (Linux; Android) Sanya/1.0"
+            )
+            connection.setRequestProperty(
+                "Accept",
+                "text/html,application/json;q=0.9,*/*;q=0.8"
+            )
+
+            if (connection.responseCode !in 200..299) {
+                return null
+            }
+
+            connection.inputStream
+                .bufferedReader(Charsets.UTF_8)
+                .use {
+                    it.readText()
+                }
+
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun findRelatedText(
+        array: JSONArray?
+    ): String? {
+
+        if (array == null) {
+            return null
+        }
+
+        for (i in 0 until array.length()) {
+            val item =
+                array.opt(i)
+
+            if (item !is JSONObject) {
+                continue
+            }
+
+            val text =
+                item.optString("Text")
+
+            if (text.isNotBlank()) {
+                return text
+            }
+
+            val nested =
+                item.optJSONArray("Topics")
+
+            val nestedText =
+                findRelatedText(nested)
+
+            if (!nestedText.isNullOrBlank()) {
+                return nestedText
+            }
+        }
+
+        return null
+    }
+
+    private fun extractFirstSnippet(
+        html: String
+    ): String? {
+
+        val patterns = listOf(
+            Regex(
+                """(?is)<(?:a|div)[^>]*class=[\"'][^\"']*result__snippet[^\"']*[\"'][^>]*>(.*?)</(?:a|div)>"""
+            ),
+            Regex(
+                """(?is)<(?:a|div)[^>]*class=[\"'][^\"']*result__a[^\"']*[\"'][^>]*>(.*?)</(?:a|div)>"""
+            )
+        )
+
+        for (pattern in patterns) {
+            val match =
+                pattern.find(html)
+                    ?: continue
+
+            val cleaned =
+                cleanAnswer(match.groupValues[1])
+
+            if (cleaned.isNotBlank()) {
+                return cleaned
+            }
+        }
+
+        return null
     }
 }
 
