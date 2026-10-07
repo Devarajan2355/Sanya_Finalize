@@ -390,6 +390,7 @@ class BubbleService : Service() {
             Regex("hands.?free on|hands.?free mode|start listening").containsMatchIn(c) -> setHandsFree(true)
             else -> {
                 val n = runner.handle(c)
+                if (runner.wantsReply()) awaiting = true   // she asked a question: keep listening, no wake word
                 wakeRx = wake()
                 ui.postDelayed({ resume() }, n * 2500L + 1500L)
             }
