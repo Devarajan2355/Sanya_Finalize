@@ -561,13 +561,9 @@ object IntentEngine {
     }
 
     /**
-     * Returns a question string suitable for local knowledge matching.
-     * Existing command transformations are reused first so wake words and
-     * polite wrappers are removed consistently with the rest of Sanya.
-     */
-    /**
      * Normalizes a knowledge question without applying command-specific
-     * rewrites. Temporal and historical words are deliberately preserved.
+     * rewrites. This deliberately preserves words that carry meaning for
+     * knowledge retrieval, especially current/former/previous and years.
      */
     fun normalizeQuestion(input: String): String {
 
@@ -589,6 +585,10 @@ object IntentEngine {
             .replace("whats", "what is")
             .replace("who's", "who is")
             .replace("whos", "who is")
+            .replace("where's", "where is")
+            .replace("wheres", "where is")
+            .replace("when's", "when is")
+            .replace("whens", "when is")
             .replace("i'm", "i am")
             .replace("you're", "you are")
             .replace("can't", "cannot")
@@ -602,7 +602,8 @@ object IntentEngine {
         )
 
         // Natural information-request wrappers. Do not remove meaningful
-        // words such as current, now, former, ex, previous, or a year.
+        // temporal/historical words such as current, now, former, ex,
+        // previous, or a year.
         text = text.replace(
             Regex(
                 """^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:tell\s+me|explain|describe|give\s+me|say|answer|identify)\s+"""
@@ -619,16 +620,16 @@ object IntentEngine {
 
         text = text.replace(
             Regex(
-                """^(?:tell\s+me|give\s+me)\s+"""
+                """^(?:give\s+me\s+)?(?:information|info|details)\s+(?:about|on)\s+"""
             ),
-            ""
+            "what is "
         )
 
         text = text.replace(
             Regex(
-                """^(?:give\s+me\s+)?(?:information|info|details)\s+(?:about|on)\s+"""
+                """^(?:tell\s+me|give\s+me)\s+"""
             ),
-            "what is "
+            ""
         )
 
         text = text.replace(
@@ -670,14 +671,10 @@ object IntentEngine {
 
         if (raw.isEmpty()) return false
 
-        // Sanya/local control and memory questions stay with the existing
-        // command/Brain pipeline.
         if (isProtectedLocalQuestion(raw)) {
             return false
         }
 
-        // Explicit commands are not knowledge questions, even if they contain
-        // words such as "can", "what", or "how".
         if (isCommandRequest(raw)) {
             return false
         }
@@ -686,7 +683,6 @@ object IntentEngine {
 
         if (question.isEmpty()) return false
 
-        // Direct interrogative forms.
         if (
             Regex(
                 """^(?:what|who|whom|when|where|why|how|which|whose)\b"""
@@ -695,17 +691,14 @@ object IntentEngine {
             return true
         }
 
-        // Common information-request forms that do not begin with an
-        // interrogative word.
         return Regex(
-            """^(?:about\s+|explain|describe|define|identify|tell\s+me\s+about|give\s+me\s+(?:information|info|details)\s+(?:about|on)|i\s+(?:want|would\s+like)\s+to\s+know)\b"""
+            """^(?:about\s+|explain|describe|define|identify|information\s+about|info\s+about|details\s+about)\b"""
         ).containsMatchIn(question)
     }
 
     /**
-     * Marks questions whose answer can change over time. This is generic:
-     * it detects temporal language and generic public-office role wording,
-     * not particular people or countries.
+     * Detects questions whose answer can change over time. No person or
+     * office-holder names are embedded here; only generic language patterns.
      */
     fun isTimeSensitiveQuestion(input: String): Boolean {
 
@@ -713,8 +706,10 @@ object IntentEngine {
 
         if (question.isEmpty()) return false
 
+        // Historical wording explicitly asks for a past state and should not
+        // be treated as a request for the current value.
         val historical = Regex(
-            """\b(?:former|ex|previous|past|historical|in\s+\d{4}|during\s+\d{4}|before|after)\b"""
+            """\b(?:former|ex|previous|past|historical|in\s+\d{4}|during\s+\d{4}|before\s+\d{4}|after\s+\d{4})\b"""
         ).containsMatchIn(question)
 
         if (historical) return false
@@ -725,10 +720,10 @@ object IntentEngine {
 
         if (explicitCurrent) return true
 
-        // "Who is the president of X?" conventionally asks for the current
-        // office holder unless a historical qualifier is supplied.
+        // By default, an office-holder question asks for the current office
+        // holder unless a historical qualifier is supplied.
         return Regex(
-            """^who\b.*\b(?:president|prime\s+minister|chief\s+minister|governor|chancellor|king|queen|pope|chief\s+justice|ceo|chairman|mayor)\b"""
+            """^(?:who\s+is|who's|who)\b.*\b(?:president|prime\s+minister|chief\s+minister|governor|chancellor|king|queen|pope|chief\s+justice|mayor|ceo|chairman)\b"""
         ).containsMatchIn(question)
     }
 
@@ -747,12 +742,10 @@ object IntentEngine {
             " "
         )
 
-        text = text
+        return text
             .replace(Regex("""[,.!?;:]+"""), " ")
             .replace(Regex("""\s+"""), " ")
             .trim()
-
-        return text
     }
 
     private fun isProtectedLocalQuestion(
@@ -793,7 +786,6 @@ object IntentEngine {
             ).containsMatchIn(q)
         ) return true
 
-        // Existing calculator intent should remain with CommandParser/AIBrain.
         if (
             Regex(
                 """^(?:what\s+(?:is|are)|calculate|compute|how\s+much\s+is)\b.*(?:\d|plus|minus|times|divided|multiplied|percent)"""
