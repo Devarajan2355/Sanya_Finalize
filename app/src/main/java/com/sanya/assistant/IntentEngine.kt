@@ -588,6 +588,15 @@ object IntentEngine {
      * such as "what is the time" or "how do I get to Chennai" still follow
      * their existing command paths.
      */
+    /**
+     * Returns true when the sentence is a real-world/general knowledge
+     * question that should go to Sanya's knowledge pipeline instead of the
+     * normal command parser.
+     *
+     * Important: questions about Sanya's own tools/memory (time, battery,
+     * notes, todos, personal facts, calculator, etc.) remain protected so
+     * the existing command system keeps handling them.
+     */
     fun isGeneralQuestion(input: String): Boolean {
 
         val question =
@@ -595,9 +604,139 @@ object IntentEngine {
 
         if (question.isEmpty()) return false
 
-        return Regex(
+        if (isProtectedCommandQuestion(question)) {
+            return false
+        }
+
+        val directQuestion = Regex(
             """^(?:what|who|whom|when|where|why|how|which|whose|is|are|was|were|am|can|could|will|would|should|shall|has|have|had|do|does|did)\b"""
         ).containsMatchIn(question)
+
+        if (directQuestion) {
+            return true
+        }
+
+        // Natural spoken forms such as:
+        // "tell me who the president of India is"
+        // "give me information about photosynthesis"
+        return Regex(
+            """^(?:tell\s+me|give\s+me)\s+(?:what|who|whom|when|where|why|how|which|whose|information\s+about|details\s+about)\b"""
+        ).containsMatchIn(question)
+    }
+
+    /**
+     * Questions that intentionally belong to Sanya's existing command
+     * system. These must not be sent to web search.
+     */
+    fun isProtectedCommandQuestion(input: String): Boolean {
+
+        val question =
+            normalizeQuestionForClassification(input)
+
+        if (question.isEmpty()) return false
+
+        if (Regex(
+                """^(?:what\s+(?:is|are)|what's|what)\s+(?:the\s+)?(?:time|date|day)|^(?:what\s+time|time\s+now|current\s+time|today's\s+date|today\s+date)\b"""
+            ).containsMatchIn(question)) {
+            return true
+        }
+
+        if (Regex(
+                """^(?:how\s+much\s+battery|what\s+(?:is|are)\s+my\s+battery|battery|battery\s+level)\b"""
+            ).containsMatchIn(question)) {
+            return true
+        }
+
+        if (Regex(
+                """^(?:am\s+i\s+(?:online|offline)|do\s+i\s+have\s+internet|is\s+(?:the\s+)?internet\s+(?:on|connected|working)|network\s+status)\b"""
+            ).containsMatchIn(question)) {
+            return true
+        }
+
+        if (Regex(
+                """^(?:what\s+(?:did|have|do)\s+you\s+(?:learn|know))\b"""
+            ).containsMatchIn(question)) {
+            return true
+        }
+
+        // Personal memory / Brain recall.
+        if (Regex(
+                """^(?:what\s+(?:is|are)|what's|tell\s+me|show\s+me|read)\s+my\s+.+"""
+            ).matches(question)) {
+            return true
+        }
+
+        // Notes and todo list.
+        if (Regex(
+                """^(?:(?:read|show|list|what\s+(?:is|are)|what's)\s+)?(?:my\s+)?notes\b"""
+            ).containsMatchIn(question) ||
+            Regex(
+                """^(?:(?:read|show|list|what\s+(?:is|are)|what's)\s+)?(?:my\s+)?(?:to-?do|todo)\s+list\b"""
+            ).containsMatchIn(question)) {
+            return true
+        }
+
+        // Calculator expressions should remain offline and local.
+        if (Regex(
+                """^(?:calculate|calc|compute|what\s+is|what's|how\s+much\s+is)?\s*-?\d+(?:\.\d+)?\s*(?:plus|minus|times|multiplied\s+by|x|into|divided\s+by|over|\+|-|\*|×|/|÷)\s*-?\d+(?:\.\d+)?(?:\s*)$"""
+            ).matches(question) ||
+            Regex(
+                """^(?:calculate|what\s+is|what's)?\s*-?\d+(?:\.\d+)?\s*(?:percent|%)\s+of\s+-?\d+(?:\.\d+)?$"""
+            ).matches(question)) {
+            return true
+        }
+
+        return false
+    }
+
+    /**
+     * Classification-only normalization. Unlike process(), this deliberately
+     * does not convert commands such as "search for ..." or "watch ...".
+     */
+    private fun normalizeQuestionForClassification(input: String): String {
+
+        var text = input
+            .lowercase()
+            .trim()
+
+        if (text.isEmpty()) return ""
+
+        text = text.replace(
+            Regex(
+                """\b(?:hey\s+)?(?:sanya|sania|saniya|sonya|sonia|sunya)\b"""
+            ),
+            " "
+        )
+
+        text = text
+            .replace("what's", "what is")
+            .replace("whats", "what is")
+            .replace("today's", "today is")
+            .replace("todays", "today is")
+            .replace("i'm", "i am")
+            .replace("you're", "you are")
+            .replace("can't", "cannot")
+            .replace("don't", "do not")
+            .replace("it's", "it is")
+            .replace(Regex("""[,.!?;:]+"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+        text = text.replace(
+            Regex(
+                """^(?:can|could|would|will)\s+you\s+(?:please\s+)?"""
+            ),
+            ""
+        )
+
+        text = text.replace(
+            Regex("""^(?:please|pls|plz|kindly)\s+"""),
+            ""
+        )
+
+        return text
+            .replace(Regex("""\s+"""), " ")
+            .trim()
     }
 
     /**
