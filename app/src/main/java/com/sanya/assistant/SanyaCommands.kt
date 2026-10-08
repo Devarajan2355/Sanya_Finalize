@@ -918,6 +918,7 @@ class StepRunner(
     private var confirmCmd = ""
     private var confirmPhrase = ""
     private var teachPhrase = ""
+    private var confirmSteps: List<Step> = emptyList()   // risky action waiting for "yes"
     private var pendingAt = 0L
 
     // Web lookups and local knowledge I/O must never block the UI thread.
@@ -935,7 +936,10 @@ class StepRunner(
     }
 
     // Learned slang first, then normal parsing.
-    private fun plan(raw: String): List<Step> {
+    private fun plan(input: String): List<Step> {
+
+        // "call my mother" -> "call ammu" (people she has learned)
+        val raw = Mind.resolveRelations(input)
 
         val t = Brain.clean(raw)
 
@@ -1100,6 +1104,17 @@ class StepRunner(
                 lastCommand = raw
             }
 
+            // Calls and bulk deletes need a "yes" first.
+            val ask = riskyAsk(steps)
+
+            if (ask != null) {
+                clearPending()
+                confirmSteps = steps
+                pendingAt = System.currentTimeMillis()
+                say(ask)
+                return 1
+            }
+
             Mind.record(ctx, Brain.clean(raw), true)
             return run(steps)
         }
@@ -1161,21 +1176,63 @@ class StepRunner(
     }
 
     private fun pendingValid(): Boolean =
-        (confirmCmd.isNotEmpty() || teachPhrase.isNotEmpty()) &&
+        (
+            confirmCmd.isNotEmpty() ||
+                teachPhrase.isNotEmpty() ||
+                confirmSteps.isNotEmpty()
+            ) &&
             System.currentTimeMillis() - pendingAt < 20_000L
 
     private fun clearPending() {
         confirmCmd = ""
         confirmPhrase = ""
         teachPhrase = ""
+        confirmSteps = emptyList()
+    }
+
+    // Proactive Sanya: say something first and, if you say yes, run [cmd].
+    // Called by BubbleService (Proactive.next).
+    fun offer(text: String, cmd: String) {
+        clearPending()
+        confirmCmd = cmd
+        pendingAt = System.currentTimeMillis()
+        say(text)
+    }
+
+    // Actions that deserve a "yes" first. Returns the question, or null if safe.
+    // Messages are not listed: they only open a draft and you tap send.
+    private fun riskyAsk(steps: List<Step>): String? {
+
+        if (Brain.setting("confirm actions", "on") == "off") return null
+
+        for (s in steps) {
+            when (s) {
+                is Step.Call ->
+                    return if (s.whatsapp) {
+                        "WhatsApp ${if (s.video) "video " else ""}call ${s.contact}? Say yes or no."
+                    } else {
+                        "Call ${s.contact}? Say yes or no."
+                    }
+
+                Step.ClearTodos ->
+                    return "Clear your whole to-do list? Say yes or no."
+
+                Step.ClearNotes ->
+                    return "Delete all your notes? Say yes or no."
+
+                else -> {}
+            }
+        }
+
+        return null
     }
 
     private val yesRx = Regex(
-        """^(?:yes|yeah|yep|yup|ya|ok|okay|sure|correct|right|do it|please do)\b"""
+        """^(?:yes|yeah|yep|yup|ya|ok|okay|sure|correct|right|do it|please do|go ahead|confirm)\b"""
     )
 
     private val noRx = Regex(
-        """^(?:no|nope|nah|never mind|nevermind|cancel|forget it|skip)\b"""
+        """^(?:no|nope|nah|never mind|nevermind|cancel|forget it|skip|stop|dont|do not)\b"""
     )
 
     // Returns the step count if the sentence answered my question,
@@ -1183,6 +1240,26 @@ class StepRunner(
     private fun answerPending(raw: String): Int {
 
         val t = Brain.clean(raw)
+
+        // ---- "Call Ravi? Say yes or no." ----
+        if (confirmSteps.isNotEmpty()) {
+
+            val steps = confirmSteps
+
+            if (yesRx.containsMatchIn(t)) {
+                clearPending()
+                return run(steps)
+            }
+
+            if (noRx.containsMatchIn(t)) {
+                clearPending()
+                say("Okay, cancelled.")
+                return 1
+            }
+
+            clearPending()
+            return -1
+        }
 
         // ---- "Did you mean X?" / "Shall I do X?" ----
         if (confirmCmd.isNotEmpty()) {
@@ -2172,10 +2249,13 @@ class StepRunner(
                             "."
                     }
 
+                val dates = Mind.upcomingLine()
+
                 val hint =
-                    Mind.habit(ctx)?.let {
-                        " Around now you often say $it."
-                    } ?: ""
+                    (if (dates.isEmpty()) "" else " $dates") +
+                        (Mind.habit(ctx)?.let {
+                            " Around now you often say $it."
+                        } ?: "")
 
                 say(
                     "$greet${name()}. " +
