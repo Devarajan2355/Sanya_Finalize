@@ -21,14 +21,31 @@ import java.util.zip.ZipInputStream
 // Offline voice model: downloaded once, stored inside the app.
 object ModelStore {
     const val DEFAULT_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+    // Trained on Indian English speakers (36 MB); usually better for Indian accents.
+    const val INDIAN_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip"
+
     fun dir(c: Context) = File(c.filesDir, "vosk-model")
     fun ready(c: Context) = File(dir(c), "am/final.mdl").exists()
+
+    // Remembers which URL the installed model came from, so changing
+    // "setting | voice model url = ..." in the brain file can switch models.
+    private fun marker(c: Context) = File(c.filesDir, "vosk-model.url")
+    fun currentUrl(): String = Brain.setting("voice model url", DEFAULT_URL)
+
+    // True when a model is installed but the brain file now asks for a different one.
+    fun outdated(c: Context): Boolean {
+        if (!ready(c)) return false
+        val m = marker(c)
+        val installed = if (m.exists()) m.readText().trim() else DEFAULT_URL
+        return installed != currentUrl()
+    }
 
     // Returns null on success, or a short error message.
     fun download(c: Context, onProgress: (Int) -> Unit): String? {
         return try {
+            val url = currentUrl()
             val tmp = File(c.cacheDir, "voice-model.zip")
-            val conn = URL(Brain.setting("voice model url", DEFAULT_URL)).openConnection() as HttpURLConnection
+            val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 20000
             conn.readTimeout = 30000
             val total = conn.contentLengthLong
@@ -49,7 +66,7 @@ object ModelStore {
                     }
                 }
             }
-            val dest = dir(c)
+            val dest = File(c.filesDir, "vosk-model-new")
             dest.deleteRecursively()
             dest.mkdirs()
             ZipInputStream(tmp.inputStream().buffered()).use { z ->
@@ -65,7 +82,19 @@ object ModelStore {
                 }
             }
             tmp.delete()
-            if (ready(c)) null else "model files missing after unzip"
+            if (!File(dest, "am/final.mdl").exists()) {
+                dest.deleteRecursively()
+                "model files missing after unzip (your old voice is untouched)"
+            } else {
+                val live = dir(c)
+                live.deleteRecursively()
+                if (dest.renameTo(live)) {
+                    marker(c).writeText(url)
+                    null
+                } else {
+                    "could not install the new voice"
+                }
+            }
         } catch (e: Exception) {
             e.message ?: "download failed"
         }
