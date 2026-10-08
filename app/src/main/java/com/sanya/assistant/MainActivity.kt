@@ -53,7 +53,7 @@ class MainActivity : Activity() {
         val start = wide("Start Sanya") { go() }.apply { textSize = 20f }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(btn("Save", 1f) { saveNow(); toast("Saved") })
+            addView(btn("Save", 1f) { saveNow(); toast("Saved"); refreshModel() })
             addView(btn("Share / backup", 1f) { share() })
         }
         setContentView(LinearLayout(this).apply {
@@ -63,6 +63,7 @@ class MainActivity : Activity() {
             addView(row)
             addView(status)
             addView(dl)
+            addView(wide("Choose voice: US / Indian English") { switchVoice() })
             addView(wide("Keep Sanya alive (Xiaomi settings)") { keepAlive() })
             addView(editor)
         })
@@ -73,8 +74,15 @@ class MainActivity : Activity() {
 
     private fun refreshModel() {
         val ok = ModelStore.ready(this)
-        status.text = if (ok) "Offline voice: installed. Tap Start Sanya." else "Offline voice: not installed (one-time download, needs internet)"
-        dl.visibility = if (ok) View.GONE else View.VISIBLE
+        val old = ModelStore.outdated(this)
+        val which = if (ModelStore.currentUrl() == ModelStore.INDIAN_URL) "Indian English" else "US English"
+        status.text = when {
+            !ok -> "Offline voice: not installed (one-time download, needs internet). Chosen: $which"
+            old -> "A different voice is chosen ($which). Tap below to switch, then tap Start Sanya."
+            else -> "Offline voice: installed ($which). Tap Start Sanya."
+        }
+        dl.text = if (ok && old) "Switch offline voice model" else "Download offline voice (about 40 MB)"
+        dl.visibility = if (ok && !old) View.GONE else View.VISIBLE
     }
 
     private fun download() {
@@ -84,9 +92,24 @@ class MainActivity : Activity() {
             val err = ModelStore.download(this) { p -> runOnUiThread { status.text = "Downloading… $p%" } }
             runOnUiThread {
                 dl.isEnabled = true
-                if (err == null) refreshModel() else status.text = "Download failed: $err"
+                if (err == null) {
+                    // The running service still holds the old model in memory; restart it on the next Start.
+                    stopService(Intent(this, BubbleService::class.java))
+                    refreshModel()
+                } else status.text = "Download failed: $err"
             }
         }.start()
+    }
+
+    // Flips the "voice model url" line in Sanya's brain between the US and Indian English models.
+    private fun switchVoice() {
+        saveNow()
+        val next = if (ModelStore.currentUrl() == ModelStore.INDIAN_URL) ModelStore.DEFAULT_URL else ModelStore.INDIAN_URL
+        Brain.put("setting", "voice model url", next)
+        loaded = Brain.text()
+        editor.setText(loaded)
+        refreshModel()
+        toast("Now tap the download button to get that voice")
     }
 
     private fun keepAlive() {
