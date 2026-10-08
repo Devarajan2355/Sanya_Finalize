@@ -8,18 +8,20 @@ android {
     defaultConfig {
         applicationId 'com.sanya.assistant'
         minSdk 26
-        targetSdk 29
-        versionCode 5
-        versionName '5.0'
+        targetSdk 28   // 28 (not 29+) so Wi-Fi can be switched directly
+        versionCode 6
+        versionName '6.0'
         ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
     }
     signingConfigs {
         debug {
             if (file('sanya.keystore').exists()) {
                 storeFile file('sanya.keystore')
-                storePassword 'sanya1234'
+                // Reads GitHub Actions secrets when present. The fallback keeps today's build working;
+                // delete the  ?: 'sanya1234'  parts once the secrets are set.
+                storePassword System.getenv('SANYA_KEYSTORE_PASSWORD') ?: 'sanya1234'
                 keyAlias 'sanya'
-                keyPassword 'sanya1234'
+                keyPassword System.getenv('SANYA_KEY_PASSWORD') ?: 'sanya1234'
             }
         }
     }
