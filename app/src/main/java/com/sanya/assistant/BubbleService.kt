@@ -101,6 +101,36 @@ class BubbleService : Service() {
         showBubble()
         makeCaption()
         loadEars()
+        ui.postDelayed(tick, 45_000L)
+    }
+
+    // ---------- Proactive Sanya: speaks first when something matters ----------
+    private val tick = object : Runnable {
+        override fun run() {
+            try { proactiveCheck() } catch (e: Throwable) { }
+            ui.postDelayed(this, 60_000L)
+        }
+    }
+
+    private fun proactiveCheck() {
+        // Never interrupt: not while she is talking or listening, not on a call,
+        // not over music/video, and only while you are actually using the phone.
+        if (pending > 0 || listening || awaiting || runner.wantsReply()) return
+        if (am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_IN_COMMUNICATION) return
+        if (am.isMusicActive) return
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (!pm.isInteractive) return
+
+        val n = Proactive.next(this) ?: return
+
+        when {
+            n.run.isNotEmpty() -> execute(n.run)
+            n.offer.isNotEmpty() -> {
+                runner.offer(n.text, n.offer)
+                awaiting = true          // listen for yes / no, no wake word needed
+            }
+            n.text.isNotEmpty() -> say(n.text)
+        }
     }
 
     // Called again each time you tap Start in the app, so a freshly downloaded voice gets loaded.
@@ -138,7 +168,7 @@ class BubbleService : Service() {
     // Wake words come from the brain file, so you can add the ways the phone mishears "Sanya".
     private fun wake(): Regex {
         val w = (Brain.setting("wake words", "sanya").split(",").map { it.trim().lowercase() } +
-            listOf("sanya", "saniya", "sania", "sunya", "sonya")).filter { it.isNotEmpty() }.distinct()
+            listOf("sanya", "saniya", "sania", "sunya", "sonya", "sonia", "sanja", "suniya", "shanya")).filter { it.isNotEmpty() }.distinct()
         return Regex("^\\s*(?:(?:hey|hi|ok|okay|uh|um|so)\\s+)?(?:" + w.joinToString("|") { Regex.escape(it) } + ")\\b[ ,.]*")
     }
 
