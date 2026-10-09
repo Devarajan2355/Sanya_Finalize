@@ -919,6 +919,7 @@ class StepRunner(
     private var confirmPhrase = ""
     private var teachPhrase = ""
     private var confirmSteps: List<Step> = emptyList()   // risky action waiting for "yes"
+    private var confirmText = ""                          // what she learns if you say yes
     private var correctPending = false                    // "Sorry. What did you say?"
     @Volatile private var lastOriginal = ""               // what she last heard, exactly as heard
     @Volatile private var lastHeardAt = 0L
@@ -977,7 +978,8 @@ class StepRunner(
 
         return CommandParser.parse(
             if (hit != null) {
-                slang[hit] ?: raw
+                // A slang command can name a relation too ("call my mother").
+                Mind.resolveRelations(slang[hit] ?: raw)
             } else {
                 raw
             }
@@ -1040,7 +1042,7 @@ class StepRunner(
         // "no, I said preethi" is something she understands too.
         if (correctionFor(input) != null) return true
 
-        val raw = Mind.applyHeard(input)
+        val raw = hear(input)
 
         if (Mind.kind(raw) != null) return true
 
@@ -1055,6 +1057,11 @@ class StepRunner(
 
         return AIBrain.answer(raw) != null
     }
+
+    // What she heard, after her own corrections and her own model have repaired it:
+    // the fixes you taught her, then words YOU have said in that place that sound the same.
+    private fun hear(input: String): String =
+        Learner.repair(ctx, Mind.applyHeard(input))
 
     // True while Sanya has asked a question and is waiting for the answer.
     // BubbleService keeps the microphone open (no wake word) while this is true.
@@ -1071,7 +1078,10 @@ class StepRunner(
         if (correction != null) return applyCorrection(correction)
 
         // Fixes she has already learned ("call pretty" -> "call preethi").
-        val raw = Mind.applyHeard(input)
+        val taught = Mind.applyHeard(input)
+        val raw = Learner.repair(ctx, taught)
+
+        if (raw != taught) quiet("Heard '${taught}', understood '${raw}'")
 
         // ---------------------------------------------------------
         // 1. Answer to a question Sanya just asked
@@ -1135,12 +1145,14 @@ class StepRunner(
             if (ask != null) {
                 clearPending()
                 confirmSteps = steps
+                confirmText = confirmedText(steps, raw)
                 pendingAt = System.currentTimeMillis()
                 say(ask)
                 return 1
             }
 
             Mind.record(ctx, Brain.clean(raw), true)
+            learnFrom(raw, 1)
             return run(steps)
         }
 
@@ -1176,7 +1188,9 @@ class StepRunner(
 
     // Runs a stored command directly. Never re-applies slang, so a bad
     // rule can never loop.
-    private fun perform(cmd: String): Int {
+    private fun perform(command: String): Int {
+
+        val cmd = Mind.resolveRelations(command)
 
         if (IntentEngine.isGeneralQuestion(cmd)) {
             answerGeneralQuestion(cmd)
@@ -1219,6 +1233,7 @@ class StepRunner(
         fixName = ""
         fixStep = null
         correctPending = false
+        confirmText = ""
     }
 
     // Proactive Sanya: say something first and, if you say yes, run [cmd].
@@ -1317,7 +1332,10 @@ class StepRunner(
             val steps = confirmSteps
 
             if (yesRx.containsMatchIn(t)) {
+                val learned = confirmText
                 clearPending()
+                // You said yes to exactly this: it is a safe thing to learn from.
+                learnFrom(learned, 2)
                 return run(steps)
             }
 
@@ -1437,6 +1455,9 @@ class StepRunner(
         // That request counts as one she got wrong (it shows in her mood).
         Mind.record(ctx, Brain.clean(lastOriginal), false)
 
+        // The corrected sentence is what you really said: the strongest thing she can learn.
+        learnFrom(fix.fixedText, 3)
+
         val contact = matchContact(fix.intendedSeg)
         val clash = matchContact(fix.heardSeg)?.second ?: 0
 
@@ -1462,6 +1483,39 @@ class StepRunner(
 
         // Now do what you actually meant.
         return maxOf(handle(fix.fixedText), 1)
+    }
+
+    // ---------------------------------------------------------------
+    // Her own model (Learner.kt): learn from what she understood
+    // ---------------------------------------------------------------
+
+    // weight: 1 = understood, 2 = you said yes, 3 = you corrected her.
+    private fun learnFrom(text: String, weight: Int) {
+
+        if (text.isBlank()) return
+
+        Learner.observe(ctx, text, weight)
+
+        // Only commands she can run directly go into her memory of your commands,
+        // never a slang phrase that needs the Brain file to be understood.
+        val steps = CommandParser.parse(text)
+
+        if (steps.isNotEmpty() && steps.none { it is Step.Unknown }) {
+            Learner.observeCommand(ctx, text)
+        }
+    }
+
+    // For a call: the words with the contact she matched, not the word she heard.
+    private fun confirmedText(steps: List<Step>, raw: String): String {
+
+        for (s in steps) {
+            if (s is Step.Call) {
+                val who = matchContact(s.contact)?.first?.name ?: return raw
+                return (if (s.whatsapp) "whatsapp call " else "call ") + who
+            }
+        }
+
+        return raw
     }
 
     // Not understood. If it is close to something she was taught, act on it
@@ -1494,6 +1548,18 @@ class StepRunner(
                 say("Did you mean ${best.first}?")
                 return 1
             }
+        }
+
+        // Not taught, but close to a command you really run? Check first.
+        val near = Learner.nearestCommand(ctx, t)
+
+        if (near != null && near.second >= 0.55) {
+            confirmPhrase = t
+            confirmCmd = near.first
+            teachPhrase = ""
+            pendingAt = System.currentTimeMillis()
+            say("Did you mean ${near.first}?")
+            return 1
         }
 
         // Nothing close: she doesn't know yet, so she asks.
