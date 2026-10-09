@@ -64,6 +64,7 @@ class MainActivity : Activity() {
             addView(status)
             addView(dl)
             addView(wide("Choose voice: US / Indian English") { switchVoice() })
+            addView(wide("Hearing: offline / Google (better for Indian names)") { switchHearing() })
             addView(wide("Keep Sanya alive (Xiaomi settings)") { keepAlive() })
             addView(editor)
         })
@@ -76,10 +77,12 @@ class MainActivity : Activity() {
         val ok = ModelStore.ready(this)
         val old = ModelStore.outdated(this)
         val which = if (ModelStore.currentUrl() == ModelStore.INDIAN_URL) "Indian English" else "US English"
+        val google = Brain.setting("hearing", "offline") == "google"
+        val ears = if (google) " Hearing: Google (online or offline pack)." else ""
         status.text = when {
-            !ok -> "Offline voice: not installed (one-time download, needs internet). Chosen: $which"
-            old -> "A different voice is chosen ($which). Tap below to switch, then tap Start Sanya."
-            else -> "Offline voice: installed ($which). Tap Start Sanya."
+            !ok -> "Offline voice: not installed (one-time download, needs internet). Chosen: $which.$ears"
+            old -> "A different voice is chosen ($which). Tap below to switch, then tap Start Sanya.$ears"
+            else -> "Offline voice: installed ($which). Tap Start Sanya.$ears"
         }
         dl.text = if (ok && old) "Switch offline voice model" else "Download offline voice (about 40 MB)"
         dl.visibility = if (ok && !old) View.GONE else View.VISIBLE
@@ -110,6 +113,18 @@ class MainActivity : Activity() {
         editor.setText(loaded)
         refreshModel()
         toast("Now tap the download button to get that voice")
+    }
+
+    // Flips "setting | hearing" between my own offline ears and Google's recogniser.
+    // Tap Start Sanya afterwards so she picks it up.
+    private fun switchHearing() {
+        saveNow()
+        val google = Brain.setting("hearing", "offline") == "google"
+        Brain.put("setting", "hearing", if (google) "offline" else "google")
+        loaded = Brain.text()
+        editor.setText(loaded)
+        toast(if (google) "Offline hearing. Tap Start Sanya." else "Google hearing (needs internet or the offline English-India pack). Tap Start Sanya.")
+        refreshModel()
     }
 
     private fun keepAlive() {
