@@ -919,6 +919,12 @@ class StepRunner(
     private var confirmPhrase = ""
     private var teachPhrase = ""
     private var confirmSteps: List<Step> = emptyList()   // risky action waiting for "yes"
+    private var correctPending = false                    // "Sorry. What did you say?"
+    @Volatile private var lastOriginal = ""               // what she last heard, exactly as heard
+    @Volatile private var lastHeardAt = 0L
+    private var fixSpoken = ""                            // "I couldn't find X. Did you mean Y?"
+    private var fixName = ""
+    private var fixStep: Step? = null
     private var pendingAt = 0L
 
     // Web lookups and local knowledge I/O must never block the UI thread.
@@ -1027,9 +1033,14 @@ class StepRunner(
     // True if Sanya understands the input: she is waiting for an answer,
     // it is a chat about herself, a follow-up question, a general question,
     // a normal command, or something the offline brain can answer.
-    fun understands(raw: String): Boolean {
+    fun understands(input: String): Boolean {
 
         if (pendingValid()) return true
+
+        // "no, I said preethi" is something she understands too.
+        if (correctionFor(input) != null) return true
+
+        val raw = Mind.applyHeard(input)
 
         if (Mind.kind(raw) != null) return true
 
@@ -1050,7 +1061,17 @@ class StepRunner(
     fun wantsReply(): Boolean = pendingValid()
 
     // Returns how many normal command steps will run.
-    fun handle(raw: String): Int {
+    fun handle(input: String): Int {
+
+        // ---------------------------------------------------------
+        // 0. A correction of what she just heard: "no, I said preethi"
+        // ---------------------------------------------------------
+
+        val correction = correctionFor(input)
+        if (correction != null) return applyCorrection(correction)
+
+        // Fixes she has already learned ("call pretty" -> "call preethi").
+        val raw = Mind.applyHeard(input)
 
         // ---------------------------------------------------------
         // 1. Answer to a question Sanya just asked
@@ -1067,6 +1088,10 @@ class StepRunner(
 
         val kind = Mind.kind(raw)
         if (kind != null) return converse(kind, raw)
+
+        // Remember exactly what she heard, so a correction has something to fix.
+        lastOriginal = input
+        lastHeardAt = System.currentTimeMillis()
 
         // ---------------------------------------------------------
         // 3. Follow-up ("what about japan" after a capital question)
@@ -1179,7 +1204,9 @@ class StepRunner(
         (
             confirmCmd.isNotEmpty() ||
                 teachPhrase.isNotEmpty() ||
-                confirmSteps.isNotEmpty()
+                confirmSteps.isNotEmpty() ||
+                fixStep != null ||
+                correctPending
             ) &&
             System.currentTimeMillis() - pendingAt < 20_000L
 
@@ -1188,6 +1215,10 @@ class StepRunner(
         confirmPhrase = ""
         teachPhrase = ""
         confirmSteps = emptyList()
+        fixSpoken = ""
+        fixName = ""
+        fixStep = null
+        correctPending = false
     }
 
     // Proactive Sanya: say something first and, if you say yes, run [cmd].
@@ -1207,12 +1238,15 @@ class StepRunner(
 
         for (s in steps) {
             when (s) {
-                is Step.Call ->
+                is Step.Call -> {
+                    // Say the name she matched, not the word she heard ("pretty" -> Preethi Kumar).
+                    val who = matchContact(s.contact)?.first?.name ?: return null
                     return if (s.whatsapp) {
-                        "WhatsApp ${if (s.video) "video " else ""}call ${s.contact}? Say yes or no."
+                        "WhatsApp ${if (s.video) "video " else ""}call $who? Say yes or no."
                     } else {
-                        "Call ${s.contact}? Say yes or no."
+                        "Call $who? Say yes or no."
                     }
+                }
 
                 Step.ClearTodos ->
                     return "Clear your whole to-do list? Say yes or no."
@@ -1240,6 +1274,42 @@ class StepRunner(
     private fun answerPending(raw: String): Int {
 
         val t = Brain.clean(raw)
+
+        // ---- "Sorry about that. What did you say?" ----
+        if (correctPending) {
+            clearPending()
+            if (noRx.containsMatchIn(t)) {
+                say("Okay.")
+                return 1
+            }
+            return applyCorrection(Mind.Correction(raw))
+        }
+
+        // ---- "I couldn't find X. Did you mean Y?" ----
+        val fix = fixStep
+
+        if (fix != null) {
+
+            val spoken = fixSpoken
+            val name = fixName
+
+            if (yesRx.containsMatchIn(t)) {
+                clearPending()
+                Brain.link("nick", spoken, name)
+                quiet("Learned: $spoken = $name")
+                ui.post { exec(fix) }
+                return 1
+            }
+
+            if (noRx.containsMatchIn(t)) {
+                clearPending()
+                say("Okay. Try saying the name again, slowly.")
+                return 1
+            }
+
+            clearPending()
+            return -1
+        }
 
         // ---- "Call Ravi? Say yes or no." ----
         if (confirmSteps.isNotEmpty()) {
@@ -1324,6 +1394,74 @@ class StepRunner(
         }
 
         return -1
+    }
+
+    // ---------------------------------------------------------------
+    // Learning from corrections
+    // ---------------------------------------------------------------
+
+    // Is this a correction of what she heard in the last two minutes?
+    private fun correctionFor(input: String): Mind.Correction? {
+        if (lastOriginal.isEmpty()) return null
+        if (System.currentTimeMillis() - lastHeardAt > 120_000L) return null
+        return Mind.parseCorrection(input, lastOriginal)
+    }
+
+    private fun looksLikeCommand(text: String): Boolean {
+        if (IntentEngine.isGeneralQuestion(text)) return true
+        val steps = CommandParser.parse(text)
+        return steps.isNotEmpty() && steps.none { it is Step.Unknown }
+    }
+
+    // She misheard. Work out which words, remember the fix, and do what you meant.
+    private fun applyCorrection(c: Mind.Correction): Int {
+
+        // "wrong" on its own: ask what the right words were.
+        if (c.said.isEmpty()) {
+            clearPending()
+            correctPending = true
+            pendingAt = System.currentTimeMillis()
+            say("Sorry about that. What did you say?")
+            return 1
+        }
+
+        val fix = Mind.diffFix(lastOriginal, c) { looksLikeCommand(it) }
+
+        clearPending()
+
+        if (fix == null) {
+            say("I heard it that way too. Try saying it a little slower.")
+            return 1
+        }
+
+        // That request counts as one she got wrong (it shows in her mood).
+        Mind.record(ctx, Brain.clean(lastOriginal), false)
+
+        val contact = matchContact(fix.intendedSeg)
+        val clash = matchContact(fix.heardSeg)?.second ?: 0
+
+        if (contact != null && contact.second >= 60) {
+
+            // A name: save it as an alias, which works with every verb (call, message, ...).
+            if (clash >= 90) {
+                // She heard another real contact. Remapping it would break calls to that person.
+                quiet("Not saved: ${fix.heardSeg} is also one of your contacts")
+            } else {
+                Brain.link("nick", fix.heardSeg, contact.first.name)
+                quiet("Learned: ${fix.heardSeg} = ${contact.first.name}")
+            }
+
+        } else {
+
+            // Anything else: remember it with the word before it, so it only fires in the same place.
+            Brain.put("heard", fix.key, fix.value)
+            quiet("Learned: ${fix.key} = ${fix.value}")
+        }
+
+        say("Sorry about that. I'll remember it.")
+
+        // Now do what you actually meant.
+        return maxOf(handle(fix.fixedText), 1)
     }
 
     // Not understood. If it is close to something she was taught, act on it
@@ -1595,9 +1733,7 @@ class StepRunner(
 
                 val c =
                     findContact(s.contact)
-                        ?: return say(
-                            "I can't find ${s.contact} in your contacts"
-                        )
+                        ?: return notFound(s.contact, s)
 
                 go(
                     Intent(
@@ -2415,7 +2551,8 @@ class StepRunner(
     private fun score(
         n: String,
         q: String,
-        raw: String
+        raw: String,
+        sounds: Boolean = false
     ): Int {
 
         if (q.isEmpty()) {
@@ -2460,6 +2597,9 @@ class StepRunner(
             q.length > 5
         ) {
             50
+        } else if (sounds) {
+            // Spelling is too far apart ("pretty" vs "preethi"): compare how they sound.
+            Mind.soundScore(q, raw)
         } else {
             0
         }
@@ -2558,32 +2698,40 @@ class StepRunner(
         return out
     }
 
-    private fun findContact(
+    // Best contact for what was heard, or null. No side effects.
+    private fun matchContact(
         spoken: String
-    ): Contact? {
+    ): Pair<Contact, Int>? {
 
         val q =
             norm(
                 resolve(spoken)
             )
 
-        val best =
-            allContacts()
-                .map {
-                    it to score(
-                        norm(it.name),
-                        q,
-                        it.name
-                    )
-                }
-                .filter {
-                    it.second > 0
-                }
-                .maxByOrNull {
-                    it.second
-                }
-                ?: return null
+        return allContacts()
+            .map {
+                it to score(
+                    norm(it.name),
+                    q,
+                    it.name,
+                    true
+                )
+            }
+            .filter {
+                it.second > 0
+            }
+            .maxByOrNull {
+                it.second
+            }
+    }
 
+    private fun findContact(
+        spoken: String
+    ): Contact? {
+
+        val best = matchContact(spoken) ?: return null
+
+        // A fuzzy or by-sound match: remember it, so next time it is exact.
         if (
             best.second in 50..60
         ) {
@@ -2600,6 +2748,39 @@ class StepRunner(
         }
 
         return best.first
+    }
+
+    // Nothing matched. Offer the closest-sounding contact, if any, and learn from the answer.
+    private fun notFound(
+        spoken: String,
+        retry: Step
+    ) {
+
+        val q = norm(resolve(spoken))
+
+        val guess =
+            if (q.length < 3) {
+                null
+            } else {
+                allContacts()
+                    .map { it to Mind.soundNear(q, it.name) }
+                    .filter { it.second < 99 }
+                    .minByOrNull { it.second }
+                    ?.first
+            }
+
+        if (guess == null) {
+            say("I can't find $spoken in your contacts")
+            return
+        }
+
+        clearPending()
+        fixSpoken = spoken
+        fixName = guess.name
+        fixStep = retry
+        pendingAt = System.currentTimeMillis()
+
+        say("I couldn't find $spoken. Did you mean ${guess.name}?")
     }
 
     private fun whatsappRow(
@@ -2638,9 +2819,7 @@ class StepRunner(
             findContact(
                 s.contact
             )
-                ?: return say(
-                    "I can't find ${s.contact} in your contacts"
-                )
+                ?: return notFound(s.contact, s)
 
         if (s.whatsapp) {
 
