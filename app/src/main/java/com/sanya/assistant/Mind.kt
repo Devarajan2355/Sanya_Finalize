@@ -267,6 +267,18 @@ object Mind {
     private val CONFIRM_OFF = Regex(
         """^(?:stop asking (?:me )?(?:before(?: calling| deleting| clearing)?|to confirm|for confirmation)|don't ask (?:me )?before calling|confirm off|no confirmation)$"""
     )
+    private val TAP_GOOGLE = Regex(
+        """^(?:use google (?:voice|ears|hearing) when i tap|tap google)$"""
+    )
+    private val TAP_OFFLINE = Regex(
+        """^(?:use offline (?:voice|ears|hearing) when i tap|tap offline)$"""
+    )
+    private val HEAR_GOOGLE = Regex(
+        """^(?:use google (?:voice|ears|hearing)|google hearing on|google voice on)$"""
+    )
+    private val HEAR_OFFLINE = Regex(
+        """^(?:use offline (?:voice|ears|hearing)|google hearing off|google voice off)$"""
+    )
     private val CONFIRM_ON = Regex(
         """^(?:ask (?:me )?before calling|confirm on|ask for confirmation)$"""
     )
@@ -335,6 +347,10 @@ object Mind {
             BRIEF_SET.matches(t) -> "brief_set"
             CONFIRM_OFF.matches(t) -> "confirm_off"
             CONFIRM_ON.matches(t) -> "confirm_on"
+            TAP_GOOGLE.matches(t) -> "tap_google"
+            TAP_OFFLINE.matches(t) -> "tap_offline"
+            HEAR_GOOGLE.matches(t) -> "hear_google"
+            HEAR_OFFLINE.matches(t) -> "hear_offline"
             DATE_SET.matches(t) -> "date_set"
             DATE_QUERY.matches(t) -> "date_query"
             isPersonSet(t) -> "person_set"
@@ -383,6 +399,26 @@ object Mind {
             "confirm_on" -> {
                 Brain.put("setting", "confirm actions", "on")
                 "Okay. I'll check with you before calling or clearing your lists."
+            }
+            "tap_google" -> {
+                Brain.put("setting", "tap voice", "google")
+                "Okay. When you tap the bubble I'll listen with Google's voice, which is much better with Indian names. " +
+                    "It needs internet and sends your voice to Google. Hands-free stays offline. " +
+                    "Say use offline voice to switch back."
+            }
+            "hear_google" -> {
+                Brain.put("setting", "hearing", "google")
+                "Okay. I'll listen with Google's voice from now on, which is much better with Indian names and accents. " +
+                    "It sends your voice to Google when you're online. Say use offline hearing to go back."
+            }
+            "hear_offline" -> {
+                Brain.put("setting", "hearing", "offline")
+                Brain.put("setting", "tap voice", "offline")
+                "Okay. I'm back to my own offline hearing."
+            }
+            "tap_offline" -> {
+                Brain.put("setting", "tap voice", "offline")
+                "Okay. Tapping the bubble uses my own offline hearing again."
             }
             "date_set" -> dateSet(norm(raw))
             "date_query" -> dateQuery(norm(raw))
@@ -904,5 +940,141 @@ object Mind {
         Brain.drop("date", name)
 
         return "Okay, I've forgotten $name."
+    }
+
+    // ---------------------------------------------------------------
+    // Hearing names by SOUND
+    //
+    // The offline voice only knows English words, so a name like "Preethi"
+    // arrives as "pretty". Spelling distance cannot connect those two, but
+    // their sound can: both boil down to the same skeleton (P-R-T).
+    // ---------------------------------------------------------------
+
+    private val SOUND_CLASSES: Map<Char, Char> = mapOf(
+        'p' to 'P', 'b' to 'P', 'f' to 'P', 'v' to 'P',
+        't' to 'T', 'd' to 'T',
+        'k' to 'K', 'g' to 'K', 'q' to 'K',
+        's' to 'S',
+        'l' to 'L', 'r' to 'R', 'm' to 'M', 'n' to 'N'
+    )
+
+    private val SOUND_SWAPS: List<Pair<String, String>> = listOf(
+        "ph" to "f", "th" to "t", "dh" to "d", "kh" to "k", "gh" to "g",
+        "bh" to "b", "sh" to "s", "ch" to "s", "ck" to "k", "qu" to "kw",
+        "x" to "ks", "w" to "v", "z" to "s", "j" to "s"
+    )
+
+    /**
+     * A rough "how it sounds" code, tuned for Indian names heard by an
+     * English recogniser.  preethi, pretty, priti -> PRT.  karthik, kartik -> KRTK.
+     */
+    fun soundKey(word: String): String {
+
+        var s = word.lowercase().filter { it in 'a'..'z' }
+        if (s.isEmpty()) return ""
+
+        for ((a, b) in SOUND_SWAPS) s = s.replace(a, b)
+
+        s = s.replace(Regex("c(?=[eiy])"), "s").replace("c", "k")
+
+        val out = StringBuilder()
+        if (s[0] in "aeiou") out.append('A')
+
+        var last = ' '
+
+        for (ch in s) {
+            val c = SOUND_CLASSES[ch] ?: ' '
+            if (c != ' ' && c != last) out.append(c)
+            last = c
+        }
+
+        return out.toString()
+    }
+
+    private fun editDistance(a: String, b: String): Int {
+
+        val d = Array(a.length + 1) { IntArray(b.length + 1) }
+
+        for (i in 0..a.length) d[i][0] = i
+        for (j in 0..b.length) d[0][j] = j
+
+        for (i in 1..a.length) {
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                d[i][j] = minOf(
+                    d[i - 1][j] + 1,
+                    d[i][j - 1] + 1,
+                    d[i - 1][j - 1] + cost
+                )
+            }
+        }
+
+        return d[a.length][b.length]
+    }
+
+    // The whole phrase joined ("pre thee" -> "prethee") plus each word on its own.
+    private fun soundParts(x: String): List<String> {
+
+        val t = x.lowercase().filter { it in 'a'..'z' || it == ' ' }.trim()
+        if (t.isEmpty()) return emptyList()
+
+        return listOf(t.replace(" ", "")) + t.split(" ").filter { it.length >= 2 }
+    }
+
+    private fun soundPair(ka: String, kb: String): Int {
+
+        if (ka.length < 2 || kb.length < 2) return 0
+
+        if (ka == kb) {
+            return if (ka.length >= 3 || ka[0] == kb[0]) 55 else 0
+        }
+
+        if (ka.length >= 4 && kb.length >= 4 && editDistance(ka, kb) == 1) return 50
+
+        return 0
+    }
+
+    /**
+     * How well [heard] sounds like [name]:
+     * 55 = same sound, 50 = one sound slipped, 0 = no.
+     */
+    fun soundScore(heard: String, name: String): Int {
+
+        var best = 0
+
+        for (a in soundParts(heard)) {
+            for (b in soundParts(name)) {
+                best = maxOf(best, soundPair(soundKey(a), soundKey(b)))
+            }
+        }
+
+        return best
+    }
+
+    /**
+     * For "Did you mean ...?" guesses: a small number means it sounds close,
+     * 99 means not close at all.
+     */
+    fun soundNear(heard: String, name: String): Int {
+
+        var best = 99
+
+        for (a in soundParts(heard)) {
+            for (b in soundParts(name)) {
+
+                val ka = soundKey(a)
+                val kb = soundKey(b)
+
+                if (ka.length < 2 || kb.length < 2) continue
+
+                val d = editDistance(ka, kb)
+
+                if (d <= (maxOf(ka.length, kb.length) + 2) / 3) {
+                    best = minOf(best, d)
+                }
+            }
+        }
+
+        return best
     }
 }
