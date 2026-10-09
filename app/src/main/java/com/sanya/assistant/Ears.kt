@@ -24,20 +24,52 @@ object ModelStore {
     // Trained on Indian English speakers (36 MB); usually better for Indian accents.
     const val INDIAN_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip"
 
-    fun dir(c: Context) = File(c.filesDir, "vosk-model")
-    fun ready(c: Context) = File(dir(c), "am/final.mdl").exists()
-
-    // Remembers which URL the installed model came from, so changing
-    // "setting | voice model url = ..." in the brain file can switch models.
-    private fun marker(c: Context) = File(c.filesDir, "vosk-model.url")
+    // The voice chosen in the brain file ("setting | voice model url = ...").
     fun currentUrl(): String = Brain.setting("voice model url", DEFAULT_URL)
 
-    // True when a model is installed but the brain file now asks for a different one.
-    fun outdated(c: Context): Boolean {
-        if (!ready(c)) return false
-        val m = marker(c)
-        val installed = if (m.exists()) m.readText().trim() else DEFAULT_URL
-        return installed != currentUrl()
+    // Every voice lives in its own folder, so switching never deletes the other one
+    // and never needs a second download.
+    private fun idOf(url: String): String =
+        url.substringAfterLast('/')
+            .removeSuffix(".zip")
+            .filter { it.isLetterOrDigit() || it == '-' || it == '.' }
+            .ifEmpty { "custom" }
+
+    private fun dirFor(c: Context, url: String) = File(c.filesDir, "voice-" + idOf(url))
+
+    fun label(url: String): String = when (url) {
+        DEFAULT_URL -> "US English"
+        INDIAN_URL -> "Indian English"
+        else -> idOf(url)
+    }
+
+    fun isInstalled(c: Context, url: String): Boolean {
+        migrate(c)
+        return File(dirFor(c, url), "am/final.mdl").exists()
+    }
+
+    fun dir(c: Context) = dirFor(c, currentUrl())
+    fun ready(c: Context) = isInstalled(c, currentUrl())
+
+    // Older versions kept a single model in "vosk-model". Move it into its own
+    // folder once, so nobody has to download it again.
+    private fun migrate(c: Context) {
+        val old = File(c.filesDir, "vosk-model")
+        if (!File(old, "am/final.mdl").exists()) return
+        val marker = File(c.filesDir, "vosk-model.url")
+        val url = try {
+            if (marker.exists()) marker.readText().trim().ifEmpty { DEFAULT_URL } else DEFAULT_URL
+        } catch (e: Exception) {
+            DEFAULT_URL
+        }
+        val target = dirFor(c, url)
+        if (File(target, "am/final.mdl").exists()) {
+            old.deleteRecursively()
+        } else {
+            target.deleteRecursively()
+            old.renameTo(target)
+        }
+        marker.delete()
     }
 
     // Returns null on success, or a short error message.
@@ -84,12 +116,11 @@ object ModelStore {
             tmp.delete()
             if (!File(dest, "am/final.mdl").exists()) {
                 dest.deleteRecursively()
-                "model files missing after unzip (your old voice is untouched)"
+                "model files missing after unzip (your other voice is untouched)"
             } else {
-                val live = dir(c)
+                val live = dirFor(c, url)
                 live.deleteRecursively()
                 if (dest.renameTo(live)) {
-                    marker(c).writeText(url)
                     null
                 } else {
                     "could not install the new voice"
