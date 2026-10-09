@@ -285,6 +285,12 @@ object Mind {
     private val FIXES_CLEAR = Regex(
         """^(?:forget my corrections|clear my corrections)$"""
     )
+    private val MODEL_STATS = Regex(
+        """^(?:how much have you learned|how well do you know my voice|show my model|how well do you know how i speak)$"""
+    )
+    private val MODEL_RESET = Regex(
+        """^(?:forget how i speak|reset your model|forget my speech)$"""
+    )
     private val CONFIRM_ON = Regex(
         """^(?:ask (?:me )?before calling|confirm on|ask for confirmation)$"""
     )
@@ -355,6 +361,8 @@ object Mind {
             CONFIRM_ON.matches(t) -> "confirm_on"
             TAP_GOOGLE.matches(t) -> "tap_google"
             TAP_OFFLINE.matches(t) -> "tap_offline"
+            MODEL_STATS.matches(t) -> "model_stats"
+            MODEL_RESET.matches(t) -> "model_reset"
             FIXES_LIST.matches(t) -> "fixes_list"
             FIXES_CLEAR.matches(t) -> "fixes_clear"
             HEAR_GOOGLE.matches(t) -> "hear_google"
@@ -413,6 +421,11 @@ object Mind {
                 "Okay. When you tap the bubble I'll listen with Google's voice, which is much better with Indian names. " +
                     "It needs internet and sends your voice to Google. Hands-free stays offline. " +
                     "Say use offline voice to switch back."
+            }
+            "model_stats" -> Learner.stats(ctx)
+            "model_reset" -> {
+                Learner.reset(ctx)
+                "Okay. I've forgotten how you speak, and I'll start learning it again."
             }
             "fixes_list" -> {
                 val m = Brain.map("heard")
