@@ -99,7 +99,7 @@ nick | gpay = google pay
         val out = mutableListOf<String>()
         for (ln in f().readLines()) {
             val r = parse(ln)
-            if (r != null && r.right.isNotEmpty() && r.type in listOf("nick", "slang", "word", "fact") && aliases(r.left).contains(a)) {
+            if (r != null && r.right.isNotEmpty() && r.type in listOf("nick", "slang", "word", "fact", "heard") && aliases(r.left).contains(a)) {
                 found = true
                 val keep = r.left.split(",").map { it.trim() }.filter { it.isNotEmpty() && clean(it) != a }
                 if (keep.isNotEmpty()) out += "${r.type} | ${keep.joinToString(", ")} = ${r.right}"
