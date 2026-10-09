@@ -74,18 +74,21 @@ class MainActivity : Activity() {
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 
     private fun refreshModel() {
+        val url = ModelStore.currentUrl()
         val ok = ModelStore.ready(this)
-        val old = ModelStore.outdated(this)
-        val which = if (ModelStore.currentUrl() == ModelStore.INDIAN_URL) "Indian English" else "US English"
+        val have = listOf(ModelStore.DEFAULT_URL, ModelStore.INDIAN_URL)
+            .filter { ModelStore.isInstalled(this, it) }
+            .joinToString(", ") { ModelStore.label(it) }
+            .ifEmpty { "none" }
         val google = Brain.setting("hearing", "offline") == "google"
         val ears = if (google) " Hearing: Google (online or offline pack)." else ""
-        status.text = when {
-            !ok -> "Offline voice: not installed (one-time download, needs internet). Chosen: $which.$ears"
-            old -> "A different voice is chosen ($which). Tap below to switch, then tap Start Sanya.$ears"
-            else -> "Offline voice: installed ($which). Tap Start Sanya.$ears"
+        status.text = if (ok) {
+            "Voice: ${ModelStore.label(url)} (ready). Downloaded: $have. Tap Start Sanya.$ears"
+        } else {
+            "Voice: ${ModelStore.label(url)} is not downloaded yet (one time, needs internet). Downloaded: $have.$ears"
         }
-        dl.text = if (ok && old) "Switch offline voice model" else "Download offline voice (about 40 MB)"
-        dl.visibility = if (ok && !old) View.GONE else View.VISIBLE
+        dl.text = "Download ${ModelStore.label(url)} voice (about 40 MB)"
+        dl.visibility = if (ok) View.GONE else View.VISIBLE
     }
 
     private fun download() {
@@ -104,7 +107,8 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    // Flips the "voice model url" line in Sanya's brain between the US and Indian English models.
+    // Flips the "voice model url" line between the US and Indian English voices.
+    // A voice that is already downloaded switches instantly (no re-download).
     private fun switchVoice() {
         saveNow()
         val next = if (ModelStore.currentUrl() == ModelStore.INDIAN_URL) ModelStore.DEFAULT_URL else ModelStore.INDIAN_URL
@@ -112,7 +116,13 @@ class MainActivity : Activity() {
         loaded = Brain.text()
         editor.setText(loaded)
         refreshModel()
-        toast("Now tap the download button to get that voice")
+        if (ModelStore.isInstalled(this, next)) {
+            // Restart the service so the next Start loads this voice.
+            stopService(Intent(this, BubbleService::class.java))
+            toast("Switched to ${ModelStore.label(next)}. Tap Start Sanya.")
+        } else {
+            toast("${ModelStore.label(next)} is not downloaded yet. Tap the download button once.")
+        }
     }
 
     // Flips "setting | hearing" between my own offline ears and Google's recogniser.
