@@ -46,6 +46,27 @@ class BubbleService : Service() {
     private var sr: SpeechRecognizer? = null        // Google voice (backup)
     private var ears: Ears? = null                  // offline Vosk voice
     private var voskReady = false
+    private var hearingMode = ""                   // "google" or "offline", as last applied
+
+    // Which ears are in charge. "setting | hearing = google" makes Google's recogniser
+    // do all the listening (much better with Indian names and accents).
+    private fun googleHearing() = Brain.setting("hearing", "offline") == "google"
+    private fun offlineEars() = voskReady && !googleHearing()
+
+    // Called after any command, and on Start: switch the ears if the setting changed.
+    private fun applyHearing() {
+        val now = if (googleHearing()) "google" else "offline"
+        if (now == hearingMode) return
+        hearingMode = now
+        if (now == "google") {
+            ears?.stop()
+            releaseLock()
+            if (handsFree) ui.postDelayed({ resume() }, 2500)    // after she says "Okay…"
+        } else {
+            sr?.destroy(); sr = null; listening = false; unmuteBeep()
+            if (handsFree && voskReady) { takeLock(); ears?.paused = false; ears?.start() }
+        }
+    }
     private var loading = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var pulse: ObjectAnimator? = null
@@ -78,6 +99,7 @@ class BubbleService : Service() {
         super.onCreate()
         Brain.setup(this)
         wakeRx = wake()
+        hearingMode = if (googleHearing()) "google" else "offline"
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel("sanya", "Sanya", NotificationManager.IMPORTANCE_MIN))
         startForeground(1, notif())
@@ -137,6 +159,7 @@ class BubbleService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(1, notif())
         loadEars()
+        applyHearing()
         return START_STICKY
     }
 
@@ -292,7 +315,8 @@ class BubbleService : Service() {
 
     // After she finishes talking, go back to listening if hands-free (or waiting for a command)
     private fun resume() {
-        if (voskReady) {
+        if (runner.wantsReply()) awaiting = true   // she asked something (even later, from a step): listen for the answer
+        if (offlineEars()) {
             ui.postDelayed({
                 if (pending > 0) return@postDelayed
                 if (handsFree || awaiting) {
@@ -316,13 +340,16 @@ class BubbleService : Service() {
         buzz()
         if (pending > 0) { tts?.stop(); pending = 0 }   // tap = stop talking
         awaiting = true                                  // a tap means: no wake word needed
-        if (voskReady) {
+        if (offlineEars() && Brain.setting("tap voice", "offline") != "google") {
             ears?.paused = false
             ears?.start()
             look(LISTENING, true)
             show("Listening…")
             ui.removeCallbacks(giveUp); ui.postDelayed(giveUp, 8000)
-        } else if (listening) sr?.stopListening() else listen()
+        } else {
+            ears?.stop()                      // free the microphone for Google's recogniser
+            if (listening) sr?.stopListening() else listen()
+        }
     }
 
     // Google voice backup (online first, offline pack if there is no internet)
@@ -399,7 +426,7 @@ class BubbleService : Service() {
     private fun heard(all: List<String>) {
         val lows = all.map { it.lowercase() }
         val pool = if (handsFree && !awaiting) lows.filter { wakeRx.containsMatchIn(it) } else lows
-        if (pool.isEmpty()) { if (!voskReady) resume(); return }   // not meant for me, keep waiting
+        if (pool.isEmpty()) { if (!offlineEars()) resume(); return }   // not meant for me, keep waiting
         ears?.paused = true
         ui.removeCallbacks(giveUp)
         look(if (handsFree) HANDS_FREE else IDLE, false)
@@ -422,6 +449,7 @@ class BubbleService : Service() {
                 val n = runner.handle(c)
                 if (runner.wantsReply()) awaiting = true   // she asked a question: keep listening, no wake word
                 wakeRx = wake()
+                applyHearing()
                 ui.postDelayed({ resume() }, n * 2500L + 1500L)
             }
         }
@@ -432,14 +460,15 @@ class BubbleService : Service() {
         prefs.edit().putBoolean("handsfree", on).apply()
         if (!on) { sr?.destroy(); sr = null; listening = false; unmuteBeep(); ears?.stop(); releaseLock() }
         look(if (on) HANDS_FREE else IDLE, false)
-        if (on && voskReady) { takeLock(); ears?.paused = false; ears?.start() }
+        if (on && offlineEars()) { takeLock(); ears?.paused = false; ears?.start() }
         if (announce) {
             say(if (on) {
-                if (voskReady) "Hands free on. Just say Sanya, then your command."
+                if (offlineEars()) "Hands free on. Just say Sanya, then your command."
+                else if (googleHearing()) "Hands free on, using Google voice."
                 else "Hands free on, using Google voice. For no beeps, download offline voice in the Sanya app."
             } else "Hands free off")
         } else show(if (on) "Hands free is on" else "Hands free off")
-        if (on && !voskReady) resume()
+        if (on && !offlineEars()) resume()
     }
 
     override fun onDestroy() {
