@@ -430,7 +430,16 @@ class BubbleService : Service() {
         ears?.paused = true
         ui.removeCallbacks(giveUp)
         look(if (handsFree) HANDS_FREE else IDLE, false)
-        val pick = pool.firstOrNull { val c = wakeRx.replace(it, "").trim(); c.isNotEmpty() && runner.understands(c) } ?: pool.first()
+        // Of the guesses she understands, prefer the one that sounds most like YOU (her own model).
+        val understood = pool.filter { val c = wakeRx.replace(it, "").trim(); c.isNotEmpty() && runner.understands(c) }
+        val pick = when {
+            understood.size > 1 -> {
+                val stripped = understood.map { wakeRx.replace(it, "").trim() }
+                understood[stripped.indexOf(Learner.choose(this, stripped)).coerceAtLeast(0)]
+            }
+            understood.size == 1 -> understood[0]
+            else -> pool.first()
+        }
         show("“$pick”")
         val cmd = wakeRx.replace(pick, "").trim()
         awaiting = false
@@ -472,6 +481,7 @@ class BubbleService : Service() {
     }
 
     override fun onDestroy() {
+        Learner.flush(this)
         ui.removeCallbacksAndMessages(null)
         unmuteBeep()
         releaseLock()
