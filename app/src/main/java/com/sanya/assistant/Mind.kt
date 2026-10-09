@@ -279,6 +279,12 @@ object Mind {
     private val HEAR_OFFLINE = Regex(
         """^(?:use offline (?:voice|ears|hearing)|google hearing off|google voice off)$"""
     )
+    private val FIXES_LIST = Regex(
+        """^(?:what have i corrected|show my corrections|list my corrections|what mistakes did you learn)$"""
+    )
+    private val FIXES_CLEAR = Regex(
+        """^(?:forget my corrections|clear my corrections)$"""
+    )
     private val CONFIRM_ON = Regex(
         """^(?:ask (?:me )?before calling|confirm on|ask for confirmation)$"""
     )
@@ -349,6 +355,8 @@ object Mind {
             CONFIRM_ON.matches(t) -> "confirm_on"
             TAP_GOOGLE.matches(t) -> "tap_google"
             TAP_OFFLINE.matches(t) -> "tap_offline"
+            FIXES_LIST.matches(t) -> "fixes_list"
+            FIXES_CLEAR.matches(t) -> "fixes_clear"
             HEAR_GOOGLE.matches(t) -> "hear_google"
             HEAR_OFFLINE.matches(t) -> "hear_offline"
             DATE_SET.matches(t) -> "date_set"
@@ -405,6 +413,19 @@ object Mind {
                 "Okay. When you tap the bubble I'll listen with Google's voice, which is much better with Indian names. " +
                     "It needs internet and sends your voice to Google. Hands-free stays offline. " +
                     "Say use offline voice to switch back."
+            }
+            "fixes_list" -> {
+                val m = Brain.map("heard")
+                if (m.isEmpty()) {
+                    "Nobody has corrected me yet. If I mishear you, say: no, I said, and then the right words."
+                } else {
+                    "I've learned ${m.size} corrections: " +
+                        m.entries.take(8).joinToString(", ") { it.key + " means " + it.value } + "."
+                }
+            }
+            "fixes_clear" -> {
+                Brain.clear("heard")
+                "Okay. I've forgotten all my corrections."
             }
             "hear_google" -> {
                 Brain.put("setting", "hearing", "google")
@@ -1076,5 +1097,235 @@ object Mind {
         }
 
         return best
+    }
+
+    // ---------------------------------------------------------------
+    // Learning from corrections
+    //
+    // She hears "call pretty" and calls the wrong person. You say
+    // "no, I said preethi". She works out WHICH words she misheard and
+    // remembers the fix together with the word before it
+    // ("call pretty" -> "call preethi"), so it only fires in the same place:
+    // "that was pretty good" is never touched.
+    // ---------------------------------------------------------------
+
+    /** said = the right words ("" means: you only told her she was wrong). */
+    data class Correction(val said: String, val wrong: String? = null)
+
+    /** A mishearing pinned down to words: heardSeg should have been intendedSeg. */
+    data class Fix(
+        val heardSeg: String,
+        val intendedSeg: String,
+        val fixedText: String,
+        val key: String,
+        val value: String
+    )
+
+    private val CORRECT_ASK = Regex(
+        """^(?:no |nope )?(?:that is wrong|that's wrong|thats wrong|wrong|you misheard|you heard wrong|that's not what i said|thats not what i said|not what i said)$"""
+    )
+    private val CORRECT_SAID = Regex(
+        """^(?:(?:no|nope|wrong) )?(?:i said|i meant|i was saying) (.+)$"""
+    )
+    private val CORRECT_NOT = Regex("""^(?:no |nope )?not (.+)$""")
+
+    // "i said that ...", "i meant to ..." are ordinary sentences, not corrections.
+    private val NOT_A_FIX = setOf("to", "that", "it", "this", "about", "if", "you", "we", "they", "he", "she")
+    private val CONNECTORS = setOf("but", "it's", "its", "it", "is")
+
+    private fun okSaid(said: String): Boolean {
+        val w = said.split(" ").filter { it.isNotEmpty() }
+        return w.isNotEmpty() && w.size <= 8 && w[0] !in NOT_A_FIX
+    }
+
+    private fun wordsOf(x: String): List<String> =
+        norm(x).split(" ").filter { it.isNotEmpty() }
+
+    private fun indexOfSub(h: List<String>, w: List<String>): Int {
+        if (w.isEmpty() || w.size > h.size) return -1
+        for (i in 0..(h.size - w.size)) {
+            if (h.subList(i, i + w.size) == w) return i
+        }
+        return -1
+    }
+
+    /**
+     * Is [raw] a correction of what she heard last ([heard])?
+     *   "no i said preethi"   "i meant call preethi"   "not pretty preethi"   "wrong"
+     * Returns null for anything else.
+     */
+    fun parseCorrection(raw: String, heard: String): Correction? {
+
+        val t = norm(raw)
+        if (t.isEmpty() || heard.isBlank()) return null
+
+        if (CORRECT_ASK.matches(t)) return Correction("")
+
+        val said = CORRECT_SAID.matchEntire(t)
+        if (said != null) {
+            val text = said.groupValues[1].trim()
+            return if (okSaid(text)) Correction(text) else null
+        }
+
+        val negated = CORRECT_NOT.matchEntire(t)
+        if (negated != null) {
+
+            val toks = negated.groupValues[1].split(" ").filter { it.isNotEmpty() }
+            val h = " " + wordsOf(heard).joinToString(" ") + " "
+
+            // Find the longest start of the sentence that she actually heard.
+            for (k in (toks.size - 1) downTo 1) {
+
+                val wrong = toks.subList(0, k).joinToString(" ")
+                if (!h.contains(" $wrong ")) continue
+
+                var rest = toks.subList(k, toks.size)
+                while (rest.isNotEmpty() && rest[0] in CONNECTORS) rest = rest.subList(1, rest.size)
+                if (rest.size >= 2 && rest[0] == "i" && (rest[1] == "said" || rest[1] == "meant")) {
+                    rest = rest.subList(2, rest.size)
+                }
+                if (rest.isEmpty()) continue
+
+                val right = rest.joinToString(" ")
+                return if (okSaid(right)) Correction(right, wrong) else null
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Which of the heard words were wrong, and what should they have been?
+     * [isCommand] tells whether a phrase is a complete command or question on its own.
+     */
+    fun diffFix(heard: String, c: Correction, isCommand: (String) -> Boolean): Fix? {
+
+        val h = wordsOf(heard)
+        val s = wordsOf(c.said)
+
+        if (h.isEmpty() || s.isEmpty() || h == s) return null
+
+        val seg = locate(h, s, c.wrong, isCommand)
+
+        return build(h, seg.first, seg.second, seg.third)
+    }
+
+    // (start, how many heard words, replacement words)
+    private fun locate(
+        h: List<String>,
+        s: List<String>,
+        wrong: String?,
+        isCommand: (String) -> Boolean
+    ): Triple<Int, Int, List<String>> {
+
+        // 1. They named the wrong words: "not pretty, preethi".
+        if (wrong != null) {
+            val w = wrong.split(" ").filter { it.isNotEmpty() }
+            val at = indexOfSub(h, w)
+            if (at >= 0) return Triple(at, w.size, s)
+        }
+
+        // 2. They repeated the whole command: peel off what both versions share.
+        var pre = 0
+        while (pre < h.size && pre < s.size && h[pre] == s[pre]) pre++
+
+        var suf = 0
+        while (
+            suf < h.size - pre &&
+            suf < s.size - pre &&
+            h[h.size - 1 - suf] == s[s.size - 1 - suf]
+        ) suf++
+
+        val whole = s.joinToString(" ")
+
+        if (s.size >= 2 && (pre >= 1 || (suf >= 1 && isCommand(whole)))) {
+            val heardLen = h.size - pre - suf
+            val mid = s.subList(pre, s.size - suf)
+            if (heardLen > 0 && mid.isNotEmpty()) return Triple(pre, heardLen, mid)
+            return Triple(0, h.size, s)
+        }
+
+        // 3. A brand new command with nothing in common.
+        if (s.size >= 2 && isCommand(whole)) return Triple(0, h.size, s)
+
+        // 4. Just the fixed words ("preethi"): replace the heard words that sound most like them.
+        val target = s.joinToString("")
+        val targetKey = soundKey(target)
+
+        var bestScore = -1.0
+        var bestRaw = 0.0
+        var bestStart = 0
+        var bestLen = 1
+
+        for (len in 1..minOf(3, h.size)) {
+            for (st in 0..(h.size - len)) {
+
+                val seg = h.subList(st, st + len).joinToString("")
+
+                var raw = similarity(seg, target)
+                if (targetKey.length >= 2 && soundKey(seg) == targetKey) raw += 0.5
+
+                val adj = raw - 0.02 * len
+
+                if (adj >= bestScore) {
+                    bestScore = adj
+                    bestRaw = raw
+                    bestStart = st
+                    bestLen = len
+                }
+            }
+        }
+
+        if (bestRaw >= 0.3) return Triple(bestStart, bestLen, s)
+
+        // Nothing sounds alike: names and objects come last, so replace the tail.
+        val n = minOf(s.size, h.size)
+        return Triple(h.size - n, n, s)
+    }
+
+    private fun build(h: List<String>, start: Int, len: Int, rep: List<String>): Fix? {
+
+        val heardSeg = h.subList(start, start + len).joinToString(" ")
+        val intendedSeg = rep.joinToString(" ")
+
+        if (heardSeg == intendedSeg) return null
+
+        val fixed = h.subList(0, start) + rep + h.subList(start + len, h.size)
+
+        val whole = start == 0 && len == h.size
+
+        // Keep one neighbouring word as context, so the fix only fires in the same place.
+        val key: String
+        val value: String
+
+        if (!whole && start > 0) {
+            key = h[start - 1] + " " + heardSeg
+            value = h[start - 1] + " " + intendedSeg
+        } else if (!whole && start + len < h.size) {
+            key = heardSeg + " " + h[start + len]
+            value = intendedSeg + " " + h[start + len]
+        } else {
+            key = heardSeg
+            value = intendedSeg
+        }
+
+        return Fix(heardSeg, intendedSeg, fixed.joinToString(" "), key, value)
+    }
+
+    /** Applies everything she has learned from corrections to what she just heard. */
+    fun applyHeard(raw: String): String {
+
+        val map = Brain.map("heard")
+        if (map.isEmpty()) return raw
+
+        var out = raw
+
+        for ((k, v) in map.entries.sortedByDescending { it.key.length }) {
+            if (k.isEmpty() || k == v) continue
+            val rx = Regex("""\b""" + Regex.escape(k) + """\b""", RegexOption.IGNORE_CASE)
+            if (rx.containsMatchIn(out)) out = rx.replace(out, Regex.escapeReplacement(v))
+        }
+
+        return out
     }
 }
