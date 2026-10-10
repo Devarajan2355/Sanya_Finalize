@@ -1623,6 +1623,15 @@ class StepRunner(
 
     private fun answerGeneralQuestion(raw: String) {
 
+        // Something you taught her always beats the internet.
+        val taught = Mind.taughtAnswer(raw)
+
+        if (taught != null) {
+            rememberKnowledge(IntentEngine.normalizeQuestion(raw), taught)
+            say(taught)
+            return
+        }
+
         val question =
             IntentEngine.normalizeQuestion(raw)
 
