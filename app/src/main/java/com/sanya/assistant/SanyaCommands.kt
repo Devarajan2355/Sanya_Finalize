@@ -1,6 +1,7 @@
 package com.sanya.assistant
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -1496,8 +1497,18 @@ class StepRunner(
             is Routines.Cmd.Mark -> say(Routines.mark(ctx, c.name, c.done))
 
             is Routines.Cmd.Show -> {
-                say("Here is your ${c.period.word} routine.")
-                go(Intent(ctx, RoutineActivity::class.java).putExtra("period", c.period.word))
+                val opened = openScreen(
+                    Intent(ctx, RoutineActivity::class.java).putExtra("period", c.period.word)
+                )
+                if (opened) {
+                    say("Here is your ${c.period.word} routine.")
+                } else {
+                    say(
+                        "I couldn't open the routines screen, so here it is in words. " +
+                            Routines.todayLine(ctx) +
+                            " The app's manifest may be missing the routines screen. Check the start screen for a setup message."
+                    )
+                }
             }
 
             is Routines.Cmd.Describe -> say(Routines.describe(c.period))
@@ -2673,6 +2684,21 @@ class StepRunner(
                     "I didn't get that. Say 'that means' and what I should do, and I'll learn it."
                 )
             }
+        }
+    }
+
+    // Opens one of Sanya's own screens. Returns false (and shows the reason in the
+    // caption) instead of failing silently.
+    private fun openScreen(i: Intent): Boolean {
+        return try {
+            ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            true
+        } catch (e: ActivityNotFoundException) {
+            quiet("Not in AndroidManifest.xml: " + (i.component?.shortClassName ?: "screen"))
+            false
+        } catch (e: Throwable) {
+            quiet("Could not open: " + e.javaClass.simpleName + " " + (e.message ?: ""))
+            false
         }
     }
 
