@@ -65,6 +65,7 @@ class MainActivity : Activity() {
             addView(dl)
             addView(wide("Choose voice: US / Indian English") { switchVoice() })
             addView(wide("Hearing: offline / Google (better for Indian names)") { switchHearing() })
+            addView(wide("My routines (chart and checklist)") { startActivity(Intent(this@MainActivity, RoutineActivity::class.java)) })
             addView(wide("Edit rules (organised: nicknames, slang, facts...)") { startActivity(Intent(this@MainActivity, BrainActivity::class.java)) })
             addView(wide("Keep Sanya alive (Xiaomi settings)") { keepAlive() })
             addView(editor)
