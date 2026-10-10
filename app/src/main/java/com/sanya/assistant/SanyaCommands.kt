@@ -920,6 +920,8 @@ class StepRunner(
     private var teachPhrase = ""
     private var confirmSteps: List<Step> = emptyList()   // risky action waiting for "yes"
     private var confirmText = ""                          // what she learns if you say yes
+    private var walkItems: List<Routines.Instance> = emptyList()   // going through the remaining activities
+    private var walkIdx = 0
     private var correctPending = false                    // "Sorry. What did you say?"
     @Volatile private var lastOriginal = ""               // what she last heard, exactly as heard
     @Volatile private var lastHeardAt = 0L
@@ -1046,6 +1048,8 @@ class StepRunner(
 
         if (Mind.kind(raw) != null) return true
 
+        if (Routines.parse(raw) != null) return true
+
         // Natural-language questions must bypass the broad command parser.
         val effective = followUp(raw) ?: raw
 
@@ -1098,6 +1102,13 @@ class StepRunner(
 
         val kind = Mind.kind(raw)
         if (kind != null) return converse(kind, raw)
+
+        // ---------------------------------------------------------
+        // 2b. Your routines: add, remaining, mark done, show the chart
+        // ---------------------------------------------------------
+
+        val routine = Routines.parse(raw)
+        if (routine != null) return routineCommand(routine)
 
         // Remember exactly what she heard, so a correction has something to fix.
         lastOriginal = input
@@ -1192,6 +1203,9 @@ class StepRunner(
 
         val cmd = Mind.resolveRelations(command)
 
+        val routine = Routines.parse(cmd)
+        if (routine != null) return routineCommand(routine)
+
         if (IntentEngine.isGeneralQuestion(cmd)) {
             answerGeneralQuestion(cmd)
             return 1
@@ -1220,7 +1234,8 @@ class StepRunner(
                 teachPhrase.isNotEmpty() ||
                 confirmSteps.isNotEmpty() ||
                 fixStep != null ||
-                correctPending
+                correctPending ||
+                walkItems.isNotEmpty()
             ) &&
             System.currentTimeMillis() - pendingAt < 20_000L
 
@@ -1234,6 +1249,8 @@ class StepRunner(
         fixStep = null
         correctPending = false
         confirmText = ""
+        walkItems = emptyList()
+        walkIdx = 0
     }
 
     // Proactive Sanya: say something first and, if you say yes, run [cmd].
@@ -1289,6 +1306,44 @@ class StepRunner(
     private fun answerPending(raw: String): Int {
 
         val t = Brain.clean(raw)
+
+        // ---- Going through the remaining activities one by one ----
+        if (walkItems.isNotEmpty()) {
+
+            val items = walkItems
+            val idx = walkIdx
+
+            if (walkStopRx.containsMatchIn(t)) {
+                clearPending()
+                say("Okay. " + Routines.todayLine(ctx))
+                return 1
+            }
+
+            val finished = walkDoneRx.containsMatchIn(t)
+            val skipped = walkSkipRx.containsMatchIn(t)
+
+            if (!finished && !skipped) {
+                // Something else: handle it as a new command.
+                clearPending()
+                return -1
+            }
+
+            if (finished) Routines.setDone(ctx, items[idx], true)
+
+            val lead = if (finished) "Marked done. " else "Okay. "
+            val next = idx + 1
+
+            if (next >= items.size) {
+                clearPending()
+                say(lead + "That's all. " + Routines.todayLine(ctx))
+                return 1
+            }
+
+            walkIdx = next
+            pendingAt = System.currentTimeMillis()
+            say(lead + "Next: " + Routines.spoken(items[next]) + ". Done, not yet, or stop?")
+            return 1
+        }
 
         // ---- "Sorry about that. What did you say?" ----
         if (correctPending) {
@@ -1412,6 +1467,72 @@ class StepRunner(
         }
 
         return -1
+    }
+
+    // ---------------------------------------------------------------
+    // Routines (Routines.kt)
+    // ---------------------------------------------------------------
+
+    private val walkDoneRx = Regex(
+        """^(?:done|finished|completed|complete|yes|yeah|yep|ya|ok|okay|did it|i did|i have|sure)\b"""
+    )
+
+    private val walkSkipRx = Regex(
+        """^(?:not yet|no|nope|nah|not done|later|skip|next|pending|unfinished|not finished|not)\b"""
+    )
+
+    private val walkStopRx = Regex(
+        """^(?:stop|cancel|enough|thats all|exit|never mind|nevermind)\b"""
+    )
+
+    private fun routineCommand(c: Routines.Cmd): Int {
+
+        when (c) {
+
+            is Routines.Cmd.Add -> say(Routines.add(c.name, c.spec))
+
+            is Routines.Cmd.Remove -> say(Routines.remove(c.name))
+
+            is Routines.Cmd.Mark -> say(Routines.mark(ctx, c.name, c.done))
+
+            is Routines.Cmd.Show -> {
+                say("Here is your ${c.period.word} routine.")
+                go(Intent(ctx, RoutineActivity::class.java).putExtra("period", c.period.word))
+            }
+
+            is Routines.Cmd.Describe -> say(Routines.describe(c.period))
+
+            is Routines.Cmd.CheckAt -> say(Routines.setCheck(c.minutes))
+
+            is Routines.Cmd.Say -> say(c.text)
+
+            Routines.Cmd.Remaining -> startWalk()
+
+            Routines.Cmd.TodayStatus -> say(Routines.todayLine(ctx))
+        }
+
+        return 1
+    }
+
+    // "What are the remaining activities": she reads them one at a time.
+    private fun startWalk() {
+
+        val remaining = Routines.today(ctx).remaining
+
+        if (remaining.isEmpty()) {
+            say(Routines.todayLine(ctx))
+            return
+        }
+
+        clearPending()
+        walkItems = remaining
+        walkIdx = 0
+        pendingAt = System.currentTimeMillis()
+
+        say(
+            "You have ${remaining.size} remaining. First: " +
+                Routines.spoken(remaining[0]) + ". Done, not yet, or stop?"
+        )
     }
 
     // ---------------------------------------------------------------
@@ -2461,9 +2582,11 @@ class StepRunner(
                     }
 
                 val dates = Mind.upcomingLine()
+                val routineLine = Routines.briefLine(ctx)
 
                 val hint =
                     (if (dates.isEmpty()) "" else " $dates") +
+                        (if (routineLine.isEmpty()) "" else " $routineLine") +
                         (Mind.habit(ctx)?.let {
                             " Around now you often say $it."
                         } ?: "")
