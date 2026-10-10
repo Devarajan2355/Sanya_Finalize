@@ -65,8 +65,8 @@ class MainActivity : Activity() {
             addView(dl)
             addView(wide("Choose voice: US / Indian English") { switchVoice() })
             addView(wide("Hearing: offline / Google (better for Indian names)") { switchHearing() })
-            addView(wide("My routines (chart and checklist)") { startActivity(Intent(this@MainActivity, RoutineActivity::class.java)) })
-            addView(wide("Edit rules (organised: nicknames, slang, facts...)") { startActivity(Intent(this@MainActivity, BrainActivity::class.java)) })
+            addView(wide("My routines (chart and checklist)") { openScreen(RoutineActivity::class.java, "RoutineActivity") })
+            addView(wide("Edit rules (organised: nicknames, slang, facts...)") { openScreen(BrainActivity::class.java, "BrainActivity") })
             addView(wide("Keep Sanya alive (Xiaomi settings)") { keepAlive() })
             addView(editor)
         })
@@ -91,6 +91,42 @@ class MainActivity : Activity() {
         }
         dl.text = "Download ${ModelStore.label(url)} voice (about 40 MB)"
         dl.visibility = if (ok) View.GONE else View.VISIBLE
+
+        val missing = missingScreens()
+        if (missing.isNotEmpty()) {
+            status.text = status.text.toString() +
+                "\n\nSETUP PROBLEM: AndroidManifest.xml is missing " + missing.joinToString(" and ") +
+                ". Add the line shown in FEATURES.md, then rebuild."
+        }
+    }
+
+    // Screens that exist in the code but are not declared in AndroidManifest.xml cannot open.
+    private fun missingScreens(): List<String> {
+
+        val out = ArrayList<String>()
+
+        val screens = listOf<Pair<Class<*>, String>>(
+            Pair(BrainActivity::class.java, "BrainActivity"),
+            Pair(RoutineActivity::class.java, "RoutineActivity")
+        )
+
+        for (s in screens) {
+            try {
+                packageManager.getActivityInfo(ComponentName(this, s.first), 0)
+            } catch (e: Exception) {
+                out.add(s.second)
+            }
+        }
+
+        return out
+    }
+
+    private fun openScreen(cls: Class<*>, name: String) {
+        try {
+            startActivity(Intent(this, cls))
+        } catch (e: Exception) {
+            toast("Can't open $name. It is missing from AndroidManifest.xml. Add it and rebuild.")
+        }
     }
 
     private fun download() {
