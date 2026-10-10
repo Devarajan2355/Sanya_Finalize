@@ -102,17 +102,38 @@ object Proactive {
             return Nudge(run = "good morning")
         }
 
+        // ---------------------------------------------------------
+        // 2b. Routines: an activity's time has come, or the evening check.
+        //     You set these up yourself, so they ignore quiet hours.
+        // ---------------------------------------------------------
+
+        val due = Routines.reminder(ctx, minutes)
+
+        if (due != null) {
+            Routines.markReminded(ctx, due)
+            p.edit().putLong("last", now).apply()
+            return Nudge(text = "Time for ${due.task.name}.")
+        }
+
+        if (p.getInt("routine", 0) != today) {
+            val evening = Routines.eveningDue(ctx, minutes)
+            if (evening != null) {
+                p.edit().putInt("routine", today).putLong("last", now).apply()
+                return Nudge(text = evening)
+            }
+        }
+
         if (quiet || count >= MAX_PER_DAY) return null
 
         // ---------------------------------------------------------
         // 3. Birthdays and other dates (today and tomorrow)
         // ---------------------------------------------------------
 
-        val due = Mind.dueDates()
+        val dated = Mind.dueDates()
 
-        if (due.isNotEmpty()) {
+        if (dated.isNotEmpty()) {
             val done = doneToday(p, "dates", today)
-            for ((label, days) in due) {
+            for ((label, days) in dated) {
                 if (label in done) continue
                 markDone(p, "dates", today, done + label)
                 return counted(Nudge(text = Mind.dateSentence(label, days)))
