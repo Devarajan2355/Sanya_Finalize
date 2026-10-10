@@ -51,6 +51,11 @@ class BrainActivity : Activity() {
         Section("heard", "Corrections", "What she heard", "What you really said", "call pretty   →   call preethi"),
         Section("person", "People", "Name", "Relation", "ammu   →   mother"),
         Section("date", "Dates", "Who and what", "Date", "ammu birthday   →   12 march"),
+        Section(
+            "routine", "Routines", "Activity",
+            "When: daily / weekly mon wed / monthly 1 / yearly 12 march (add a time like 06:30 for a reminder)",
+            "morning walk   →   daily 06:30"
+        ),
         Section("setting", "Settings", "Setting", "Value", "hearing   →   google"),
         Section("todo", "To-do", "Item", null, "buy milk"),
         Section("note", "Notes", "Note", null, "buy charger"),
@@ -82,6 +87,10 @@ class BrainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Brain.setup(this)
+
+        val wanted = intent?.getStringExtra("section")
+        val start = sections.firstOrNull { it.type == wanted }
+        if (start != null) current = start
 
         val pad = dp(12)
 
@@ -303,6 +312,9 @@ class BrainActivity : Activity() {
             if (left.contains('|') || right.contains('|')) return toast("Please don't use the | character")
             if (s.right != null && right.isEmpty()) return toast("Please fill in both boxes")
             if (s.right != null && left.contains('=')) return toast("Please don't use = in the first box")
+            if (s.type == "routine" && Routines.parseSpec(right) == null) {
+                return toast("I can't read that schedule. Try: daily 06:30, weekly mon wed, monthly 1, or yearly 12 march")
+            }
             line = Brain.format(s.type, left, right)
         }
 
