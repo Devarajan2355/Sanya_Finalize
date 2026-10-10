@@ -118,6 +118,100 @@ nick | gpay = google pay
     }
     fun clear(type: String) { write(f().readLines().filterNot { parse(it)?.type == type }) }
 
+    // ------------------------------------------------------------------
+    // For the Brain editor screen (BrainActivity): row-level reading and editing.
+    //
+    // Every change below re-reads the file and touches exactly ONE line, so the
+    // editor can never overwrite something Sanya learned while the screen was open.
+    // ------------------------------------------------------------------
+
+    /** One rule: its parts, plus the exact line it came from (used to find it again). */
+    data class Item(val type: String, val left: String, val right: String, val line: String)
+
+    // Types whose whole text is one field (no "left = right").
+    private val SINGLE = setOf("filler", "todo", "note")
+
+    fun isSingle(type: String): Boolean = type in SINGLE
+
+    fun format(type: String, left: String, right: String): String =
+        if (right.isEmpty()) "$type | $left" else "$type | $left = $right"
+
+    /** Every rule of [type], in file order. */
+    fun entries(type: String): List<Item> {
+
+        val out = ArrayList<Item>()
+
+        for (ln in f().readLines()) {
+
+            val r = parse(ln) ?: continue
+            if (r.type != type) continue
+
+            if (type in SINGLE) {
+                out.add(Item(type, ln.substring(ln.indexOf('|') + 1).trim(), "", ln))
+            } else {
+                out.add(Item(type, r.left, r.right, ln))
+            }
+        }
+
+        return out
+    }
+
+    /** Lines that are not a known rule type (typos, damaged lines), so nothing is invisible. */
+    fun stray(known: Set<String>): List<Item> {
+
+        val out = ArrayList<Item>()
+
+        for (ln in f().readLines()) {
+
+            val t = ln.trim()
+            if (t.isEmpty() || t.startsWith("#")) continue
+
+            val r = parse(ln)
+            if (r == null || r.type !in known) out.add(Item("other", t, "", ln))
+        }
+
+        return out
+    }
+
+    /**
+     * Replace (or, with null, delete) one exact line.
+     * Returns false if that line is gone because the file changed in the meantime.
+     */
+    fun replaceLine(old: String, new: String?): Boolean {
+
+        val lines = f().readLines().toMutableList()
+        val i = lines.indexOf(old)
+
+        if (i < 0) return false
+
+        if (new == null) lines.removeAt(i) else lines[i] = new
+
+        write(lines)
+
+        return true
+    }
+
+    /** Add one raw line at the end. */
+    fun appendLine(line: String) {
+        val t = f().readText()
+        f().writeText((if (t.isEmpty() || t.endsWith("\n")) t else t + "\n") + line + "\n")
+    }
+
+    // One-step undo for "Restore": the brain as it was just before.
+    private fun safetyFile() = File(f().parentFile, "brain.before-restore.txt")
+
+    fun keepSafetyCopy() { safetyFile().writeText(f().readText()) }
+
+    fun hasSafetyCopy(): Boolean = safetyFile().exists()
+
+    fun undoRestore(): Boolean {
+        val b = safetyFile()
+        if (!b.exists()) return false
+        f().writeText(b.readText())
+        b.delete()
+        return true
+    }
+
     // Words the speech recognizer should expect (wake words, nicknames, slang)
     fun hints(): ArrayList<String> = ArrayList<String>().apply {
         addAll(setting("wake words", "sanya").split(",").map { it.trim() }.filter { it.isNotEmpty() })
