@@ -374,6 +374,8 @@ object Mind {
             WHO_REL.matches(t) -> "who_rel"
             WORLD_LIST.matches(t) -> "world_list"
             WORLD_FORGET.matches(t) -> "world_forget"
+            isFactSet(t) -> "fact_set"
+            FACTS_LIST.matches(t) -> "facts_list"
             isKnownPerson(t) -> "who_is"
             else -> null
         }
@@ -460,6 +462,8 @@ object Mind {
             "who_rel" -> whoRel(norm(raw))
             "world_list" -> worldList()
             "world_forget" -> worldForget(norm(raw))
+            "fact_set" -> factSet(norm(raw))
+            "facts_list" -> factsList()
             "who_is" -> whoIs(norm(raw))
             else -> "I'm here."
         }
@@ -1340,5 +1344,187 @@ object Mind {
         }
 
         return out
+    }
+
+    // ---------------------------------------------------------------
+    // Facts you teach her: "chief minister of tamil nadu is joseph vijay"
+    //
+    // Saved in the Brain file as  fact | chief minister of tamil nadu = Joseph Vijay
+    // When you later ask "who is the chief minister of tamil nadu", what you
+    // taught her is used FIRST, before the internet.
+    // ---------------------------------------------------------------
+
+    private val ROLE_WORDS =
+        "president|vice president|prime minister|chief minister|deputy chief minister|minister|" +
+            "governor|mayor|ceo|chairman|director|principal|captain|coach|leader|founder|" +
+            "speaker|collector|commissioner|capital|owner|head|winner"
+
+    // "remember that X is Y", "learn that X is Y", "teach you X is Y"
+    private val FACT_EXPLICIT = Regex(
+        """^(?:remember|learn|note|know|teach you|i teach you|i am teaching you)(?: that)? (.+?) is (.+)$"""
+    )
+
+    // Without "remember", for facts that start with a role: "chief minister of tamil nadu is ..."
+    private val FACT_ROLE = Regex(
+        """^((?:the )?(?:current )?(?:$ROLE_WORDS) of .+?) is (.+)$"""
+    )
+
+    private val FACTS_LIST = Regex(
+        """^(?:what facts do you know|list my facts|what have i taught you|show my facts)$"""
+    )
+
+    private val SECRET_WORDS = Regex(
+        """\b(?:password|passcode|pin|otp|cvv|card|secret|key)\b"""
+    )
+
+    private val WH_WORDS = setOf("who", "what", "which", "where", "when", "why", "how")
+
+    private val ASK_LEAD = setOf(
+        "tell", "me", "give", "about", "who", "whos", "what", "whats", "which", "where",
+        "when", "is", "are", "was", "were", "the", "name", "of", "current", "present"
+    )
+
+    private val ASK_TRAIL = setOf("now", "today", "currently", "right", "please")
+
+    private val SMALL_WORDS = setOf("of", "the", "and", "in", "for", "on", "at")
+
+    // "the current chief minister of tamil nadu" -> "chief minister of tamil nadu"
+    private fun factSubject(raw: String): String {
+
+        var s = Brain.clean(raw)
+
+        while (true) {
+            val next = s.removePrefix("the ").removePrefix("current ").removePrefix("present ")
+            if (next == s) break
+            s = next
+        }
+
+        return s.trim()
+    }
+
+    // (subject, answer) if this is a fact she should learn, else null.
+    private fun factParts(t: String): Pair<String, String>? {
+
+        val m = FACT_EXPLICIT.matchEntire(t) ?: FACT_ROLE.matchEntire(t) ?: return null
+
+        val subject = factSubject(m.groupValues[1])
+        val answer = m.groupValues[2].trim()
+
+        if (subject.isEmpty() || answer.isEmpty()) return null
+
+        // Personal facts and secrets keep using "remember my ..." (encrypted when secret).
+        if (subject == "my" || subject.startsWith("my ")) return null
+        if (SECRET_WORDS.containsMatchIn(subject)) return null
+
+        // "ravi is my friend" belongs to the people feature.
+        if (answer.startsWith("my ") || answer.startsWith("your ")) return null
+
+        // "president of india is who" is a question, not a fact.
+        if (answer.split(" ")[0] in WH_WORDS) return null
+
+        if (subject.split(" ").size > 9 || answer.split(" ").size > 14) return null
+
+        return Pair(subject, answer)
+    }
+
+    private fun isFactSet(t: String): Boolean = factParts(t) != null
+
+    // Spoken text arrives in lower case: "joseph vijay" -> "Joseph Vijay".
+    private fun nameCase(v: String): String {
+
+        val t = v.trim()
+        if (t.any { it.isUpperCase() }) return t
+
+        val w = t.split(" ").filter { it.isNotEmpty() }
+        if (w.isEmpty() || w.size > 4) return t
+
+        return w.joinToString(" ") { x -> x.replaceFirstChar { c -> c.uppercase() } }
+    }
+
+    // "chief minister of tamil nadu" -> "Chief Minister of Tamil Nadu"
+    private fun subjectCase(s: String): String =
+        s.split(" ")
+            .filter { it.isNotEmpty() }
+            .mapIndexed { i, w ->
+                if (i > 0 && w in SMALL_WORDS) w else w.replaceFirstChar { c -> c.uppercase() }
+            }
+            .joinToString(" ")
+
+    private fun factSet(t: String): String {
+
+        val p = factParts(t) ?: return "I didn't catch that."
+
+        val answer = nameCase(p.second)
+
+        Brain.link("fact", p.first, answer)
+
+        return "Got it. ${subjectCase(p.first)} is $answer. " +
+            "I'll answer that from now on, even if the internet says something else."
+    }
+
+    private fun factsList(): String {
+
+        val f = Brain.map("fact")
+
+        if (f.isEmpty()) {
+            return "You haven't taught me any facts yet. Say, for example: " +
+                "remember that the capital of india is new delhi."
+        }
+
+        return "I know ${f.size} things you taught me: " +
+            f.entries.take(6).joinToString("; ") {
+                subjectCase(it.key) + " is " + nameCase(it.value)
+            } + "."
+    }
+
+    // Same words, or words that SOUND the same ("nado" and "nadu"): a misheard
+    // place name still finds your fact, but "karnataka" never matches "kerala".
+    private fun sameWords(a: List<String>, b: List<String>): Boolean {
+
+        if (a.size != b.size) return false
+
+        var differing = 0
+
+        for (i in a.indices) {
+            if (a[i] == b[i]) continue
+            val ka = soundKey(a[i])
+            if (ka.length < 2 || ka != soundKey(b[i])) return false
+            differing++
+        }
+
+        return differing <= 2
+    }
+
+    /**
+     * What YOU taught her about this question, or null.
+     * "who is the chief minister of tamil nadu now" -> "Chief Minister of Tamil Nadu is Joseph Vijay."
+     */
+    fun taughtAnswer(question: String): String? {
+
+        val facts = Brain.map("fact")
+        if (facts.isEmpty()) return null
+
+        val toks = Brain.clean(question).split(" ").filter { it.isNotEmpty() }.toMutableList()
+
+        while (toks.isNotEmpty() && toks[0] in ASK_LEAD) toks.removeAt(0)
+        while (toks.isNotEmpty() && toks[toks.size - 1] in ASK_TRAIL) toks.removeAt(toks.size - 1)
+
+        if (toks.isEmpty()) return null
+
+        val subject = toks.joinToString(" ")
+
+        val exact = facts[subject]
+        if (exact != null) return subjectCase(subject) + " is " + nameCase(exact) + "."
+
+        // Longer subjects only: tolerate a misheard word that sounds the same.
+        if (toks.size < 3) return null
+
+        for ((k, v) in facts) {
+            if (sameWords(toks, k.split(" "))) {
+                return subjectCase(k) + " is " + nameCase(v) + "."
+            }
+        }
+
+        return null
     }
 }
