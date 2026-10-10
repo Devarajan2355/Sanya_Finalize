@@ -35,6 +35,7 @@
             </intent-filter>
         </activity>
         <activity android:name=".BrainActivity" android:exported="false"/>
+        <activity android:name=".RoutineActivity" android:exported="false"/>
         <service android:name=".BubbleService" android:exported="false"
             android:foregroundServiceType="microphone"/>
         <receiver android:name=".BootReceiver" android:exported="true">
