@@ -96,6 +96,7 @@ class BubbleService : Service() {
         .setSmallIcon(android.R.drawable.ic_btn_speak_now).build()
 
     override fun onCreate() {
+        ErrorLog.install(this)
         super.onCreate()
         Brain.setup(this)
         wakeRx = wake()
@@ -119,7 +120,10 @@ class BubbleService : Service() {
         ears = Ears(this,
             onPartial = { p -> ui.post { if (awaiting || wakeRx.containsMatchIn(p)) show("🎤 $p") } },
             onFinal = { t -> ui.post { heard(listOf(t)) } },
-            onProblem = { m -> ui.post { stopEars(m) } })
+            onProblem = { m ->
+                ErrorLog.note(this, "Hearing", m)
+                ui.post { stopEars(m) }
+            })
         showBubble()
         makeCaption()
         loadEars()
@@ -129,7 +133,7 @@ class BubbleService : Service() {
     // ---------- Proactive Sanya: speaks first when something matters ----------
     private val tick = object : Runnable {
         override fun run() {
-            try { proactiveCheck() } catch (e: Throwable) { }
+            try { proactiveCheck() } catch (e: Throwable) { ErrorLog.add(this@BubbleService, "Proactive check", e) }
             ui.postDelayed(this, 60_000L)
         }
     }
