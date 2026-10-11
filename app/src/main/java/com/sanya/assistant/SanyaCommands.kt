@@ -1708,6 +1708,12 @@ class StepRunner(
 
     private fun converse(kind: String, raw: String): Int {
 
+        if (kind == "health_check") {
+            say(Mind.reply(ctx, kind, raw, name()))
+            openScreen(Intent(ctx, HealthActivity::class.java))
+            return 1
+        }
+
         if (kind == "suggest") {
             val h = Mind.habit(ctx)
             if (h != null) {
@@ -1859,6 +1865,7 @@ class StepRunner(
                 safeSay(natural)
 
             } catch (e: Throwable) {
+                ErrorLog.add(ctx, "Answering a question", e)
                 safeSay(
                     "I couldn't answer that right now."
                 )
@@ -2695,9 +2702,11 @@ class StepRunner(
             true
         } catch (e: ActivityNotFoundException) {
             quiet("Not in AndroidManifest.xml: " + (i.component?.shortClassName ?: "screen"))
+            ErrorLog.add(ctx, "Screen missing from AndroidManifest.xml", e)
             false
         } catch (e: Throwable) {
             quiet("Could not open: " + e.javaClass.simpleName + " " + (e.message ?: ""))
+            ErrorLog.add(ctx, "Could not open a screen", e)
             false
         }
     }
@@ -2711,6 +2720,7 @@ class StepRunner(
                 )
             )
         }.onFailure {
+            ErrorLog.add(ctx, "Could not open an app or screen", it)
             say(
                 "That didn't open"
             )
