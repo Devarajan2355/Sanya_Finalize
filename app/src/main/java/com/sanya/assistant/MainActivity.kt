@@ -29,6 +29,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        ErrorLog.install(this)
         Brain.setup(this)
         val pad = (12 * resources.displayMetrics.density).toInt()
         fun btn(label: String, w: Float, click: () -> Unit) = Button(this).apply {
@@ -65,6 +66,7 @@ class MainActivity : Activity() {
             addView(dl)
             addView(wide("Choose voice: US / Indian English") { switchVoice() })
             addView(wide("Hearing: offline / Google (better for Indian names)") { switchHearing() })
+            addView(wide("Health check (what is wrong, and how to fix it)") { openScreen(HealthActivity::class.java, "HealthActivity") })
             addView(wide("My routines (chart and checklist)") { openScreen(RoutineActivity::class.java, "RoutineActivity") })
             addView(wide("Edit rules (organised: nicknames, slang, facts...)") { openScreen(BrainActivity::class.java, "BrainActivity") })
             addView(wide("Keep Sanya alive (Xiaomi settings)") { keepAlive() })
@@ -107,7 +109,8 @@ class MainActivity : Activity() {
 
         val screens = listOf<Pair<Class<*>, String>>(
             Pair(BrainActivity::class.java, "BrainActivity"),
-            Pair(RoutineActivity::class.java, "RoutineActivity")
+            Pair(RoutineActivity::class.java, "RoutineActivity"),
+            Pair(HealthActivity::class.java, "HealthActivity")
         )
 
         for (s in screens) {
