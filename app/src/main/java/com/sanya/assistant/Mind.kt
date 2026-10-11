@@ -285,6 +285,9 @@ object Mind {
     private val FIXES_CLEAR = Regex(
         """^(?:forget my corrections|clear my corrections)$"""
     )
+    private val HEALTH = Regex(
+        """^(?:run (?:a )?health check|health check|check yourself|is everything working|what is wrong with you|run diagnostics)$"""
+    )
     private val MODEL_STATS = Regex(
         """^(?:how much have you learned|how well do you know my voice|show my model|how well do you know how i speak)$"""
     )
@@ -361,6 +364,7 @@ object Mind {
             CONFIRM_ON.matches(t) -> "confirm_on"
             TAP_GOOGLE.matches(t) -> "tap_google"
             TAP_OFFLINE.matches(t) -> "tap_offline"
+            HEALTH.matches(t) -> "health_check"
             MODEL_STATS.matches(t) -> "model_stats"
             MODEL_RESET.matches(t) -> "model_reset"
             FIXES_LIST.matches(t) -> "fixes_list"
@@ -424,6 +428,7 @@ object Mind {
                     "It needs internet and sends your voice to Google. Hands-free stays offline. " +
                     "Say use offline voice to switch back."
             }
+            "health_check" -> Health.summary(ctx)
             "model_stats" -> Learner.stats(ctx)
             "model_reset" -> {
                 Learner.reset(ctx)
