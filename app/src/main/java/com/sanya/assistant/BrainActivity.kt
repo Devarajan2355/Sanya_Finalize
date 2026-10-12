@@ -53,9 +53,10 @@ class BrainActivity : Activity() {
         Section("date", "Dates", "Who and what", "Date", "ammu birthday   →   12 march"),
         Section(
             "routine", "Routines", "Activity",
-            "When: daily / weekly mon wed / monthly 1 / yearly 12 march (add a time like 06:30 for a reminder)",
-            "morning walk   →   daily 06:30"
+            "When: daily / weekly mon wed / monthly 1 / yearly 12 march. Add a time like 06:30 for a reminder, and 'for 2h' for a study target",
+            "japanese   →   daily 19:00 for 2h"
         ),
+        Section("category", "Money categories", "Words (separate with commas)", "Category", "tea, chai, snacks   →   food"),
         Section("setting", "Settings", "Setting", "Value", "hearing   →   google"),
         Section("todo", "To-do", "Item", null, "buy milk"),
         Section("note", "Notes", "Note", null, "buy charger"),
@@ -313,7 +314,7 @@ class BrainActivity : Activity() {
             if (s.right != null && right.isEmpty()) return toast("Please fill in both boxes")
             if (s.right != null && left.contains('=')) return toast("Please don't use = in the first box")
             if (s.type == "routine" && Routines.parseSpec(right) == null) {
-                return toast("I can't read that schedule. Try: daily 06:30, weekly mon wed, monthly 1, or yearly 12 march")
+                return toast("I can't read that schedule. Try: daily 06:30, weekly mon wed, monthly 1, yearly 12 march, or add 'for 2h' for a study target")
             }
             line = Brain.format(s.type, left, right)
         }
