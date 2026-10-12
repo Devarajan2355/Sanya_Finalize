@@ -5,6 +5,8 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -19,6 +21,7 @@ import android.widget.Toast
  * Study time: where your time went, tied to your routine.
  *
  *   - Start timer / Stop timer, and a note when one is running
+ *   - Pomodoro: focus sessions with breaks, counting down live
  *   - total for today / this week / this month, with a bar chart
  *   - time by activity (for a routine activity with a target, how far along you are today)
  *   - every session, with X to delete it
@@ -31,6 +34,8 @@ class TimeActivity : Activity() {
 
     private var gran = Money.Gran.WEEK
 
+    private val handler = Handler(Looper.getMainLooper())
+
     private lateinit var tabs: LinearLayout
     private lateinit var timerLine: TextView
     private lateinit var summary: TextView
@@ -38,6 +43,15 @@ class TimeActivity : Activity() {
     private lateinit var chart: ValueChartView
     private lateinit var box: LinearLayout
     private lateinit var timerBtn: Button
+    private lateinit var pomoBtn: Button
+
+    // Redraws the timer line every second so the countdown moves.
+    private val ticker = object : Runnable {
+        override fun run() {
+            updateTimerLine()
+            handler.postDelayed(this, 1000L)
+        }
+    }
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
 
@@ -113,10 +127,15 @@ class TimeActivity : Activity() {
 
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         timerBtn = action("Start timer") { toggleTimer() }
+        pomoBtn = action("Pomodoro") { togglePomodoro() }
         bottom.addView(timerBtn)
-        bottom.addView(action("+ Log time") { logByHand() })
-        bottom.addView(action("Share report") { share() })
+        bottom.addView(pomoBtn)
         root.addView(bottom)
+
+        val bottom2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        bottom2.addView(action("+ Log time") { logByHand() })
+        bottom2.addView(action("Share report") { share() })
+        root.addView(bottom2)
 
         setContentView(root)
         render()
@@ -125,6 +144,12 @@ class TimeActivity : Activity() {
     override fun onResume() {
         super.onResume()
         render()      // pick up sessions and timers started by voice
+        handler.post(ticker)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        handler.removeCallbacks(ticker)
     }
 
     private fun action(label: String, click: () -> Unit) = Button(this).apply {
@@ -142,6 +167,34 @@ class TimeActivity : Activity() {
         Money.Gran.DAY -> "Today"
         Money.Gran.WEEK -> "This week"
         Money.Gran.MONTH -> "This month"
+    }
+
+    // The line under the tabs, and the two timer buttons. Called every second.
+    private fun updateTimerLine() {
+
+        // A pomodoro that ran out while nothing was watching: log it and clear it.
+        if (Pomodoro.isOver(this)) {
+            toast(Pomodoro.stop(this))
+            render()
+            return
+        }
+
+        val running = Study.running(this)
+
+        if (Pomodoro.running(this)) {
+            timerLine.text = "Pomodoro: " + Pomodoro.statusLine(this)
+            pomoBtn.text = "Stop pomodoro"
+        } else {
+            pomoBtn.text = "Pomodoro"
+            if (running == null) {
+                timerLine.text = "No timer running"
+            } else {
+                val mins = ((System.currentTimeMillis() - running.second) / 60_000L).toInt()
+                timerLine.text = "Timer running: " + running.first + ", " + Num.short(maxOf(mins, 0))
+            }
+        }
+
+        timerBtn.text = if (running == null) "Start timer" else "Stop timer"
     }
 
     private fun render() {
@@ -162,16 +215,7 @@ class TimeActivity : Activity() {
             })
         }
 
-        val running = Study.running(this)
-
-        if (running == null) {
-            timerLine.text = "No timer running"
-            timerBtn.text = "Start timer"
-        } else {
-            val mins = ((System.currentTimeMillis() - running.second) / 60_000L).toInt()
-            timerLine.text = "Timer running: " + running.first + ", " + Num.short(maxOf(mins, 0))
-            timerBtn.text = "Stop timer"
-        }
+        updateTimerLine()
 
         val sessions = Study.current(this, gran)
         val total = sessions.sumOf { it.minutes }
@@ -200,7 +244,7 @@ class TimeActivity : Activity() {
 
         if (sessions.isEmpty()) {
             box.addView(TextView(this).apply {
-                text = "Nothing yet. Say: log 45 minutes for japanese. Or tap Start timer."
+                text = "Nothing yet. Say: log 45 minutes for japanese. Or tap Start timer or Pomodoro."
                 setPadding(0, dp(6), 0, dp(6))
             })
         }
@@ -239,9 +283,15 @@ class TimeActivity : Activity() {
             setPadding(0, dp(2), 0, dp(2))
         }
 
+        val tag = when (s.source) {
+            "timer" -> "  (timer)"
+            "pomodoro" -> "  (pomodoro)"
+            else -> ""
+        }
+
         line.addView(TextView(this).apply {
             text = s.date.dayOfMonth.toString() + "/" + s.date.monthValue + "   " + Num.short(s.minutes) + "   " +
-                s.task.replaceFirstChar { it.uppercase() } + (if (s.source == "timer") "  (timer)" else "")
+                s.task.replaceFirstChar { it.uppercase() } + tag
             textSize = 14f
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
@@ -256,14 +306,20 @@ class TimeActivity : Activity() {
     }
 
     // ---------------------------------------------------------------
-    // Timer, manual log, delete, share
+    // Timer, pomodoro, manual log, delete, share
     // ---------------------------------------------------------------
 
     private fun toggleTimer() {
 
         if (Study.running(this) != null) {
             toast(Study.stop(this))
+            SanyaWidget.refresh(this)
             render()
+            return
+        }
+
+        if (Pomodoro.running(this)) {
+            toast("A pomodoro is running. Stop it first.")
             return
         }
 
@@ -284,6 +340,47 @@ class TimeActivity : Activity() {
             .setView(form)
             .setPositiveButton("Start") { _, _ ->
                 toast(Study.start(this, what.text.toString()))
+                SanyaWidget.refresh(this)
+                render()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun togglePomodoro() {
+
+        if (Pomodoro.running(this)) {
+            toast(Pomodoro.stop(this))
+            render()
+            return
+        }
+
+        if (Study.running(this) != null) {
+            toast("A study timer is running. Stop it first.")
+            return
+        }
+
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+        }
+
+        val what = EditText(this).apply {
+            hint = "What are you working on?"
+            setText("study")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        }
+        form.addView(what)
+
+        val plan = Pomodoro.focusMinutes().toString() + " min focus, " + Pomodoro.shortMinutes() +
+            " min break, long break after " + Pomodoro.cycles() + " sessions"
+
+        AlertDialog.Builder(this)
+            .setTitle("Start pomodoro")
+            .setMessage(plan)
+            .setView(form)
+            .setPositiveButton("Start") { _, _ ->
+                toast(Pomodoro.start(this, what.text.toString()))
                 render()
             }
             .setNegativeButton("Cancel", null)
