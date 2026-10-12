@@ -68,6 +68,8 @@ class MainActivity : Activity() {
             addView(wide("Hearing: offline / Google (better for Indian names)") { switchHearing() })
             addView(wide("Health check (what is wrong, and how to fix it)") { openScreen(HealthActivity::class.java, "HealthActivity") })
             addView(wide("My routines (chart and checklist)") { openScreen(RoutineActivity::class.java, "RoutineActivity") })
+            addView(wide("My money (spent, earned, budget)") { openScreen(MoneyActivity::class.java, "MoneyActivity") })
+            addView(wide("Study time (timer and log)") { openScreen(TimeActivity::class.java, "TimeActivity") })
             addView(wide("Edit rules (organised: nicknames, slang, facts...)") { openScreen(BrainActivity::class.java, "BrainActivity") })
             addView(wide("Keep Sanya alive (Xiaomi settings)") { keepAlive() })
             addView(editor)
@@ -110,7 +112,9 @@ class MainActivity : Activity() {
         val screens = listOf<Pair<Class<*>, String>>(
             Pair(BrainActivity::class.java, "BrainActivity"),
             Pair(RoutineActivity::class.java, "RoutineActivity"),
-            Pair(HealthActivity::class.java, "HealthActivity")
+            Pair(HealthActivity::class.java, "HealthActivity"),
+            Pair(MoneyActivity::class.java, "MoneyActivity"),
+            Pair(TimeActivity::class.java, "TimeActivity")
         )
 
         for (s in screens) {
