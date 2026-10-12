@@ -24,7 +24,7 @@ import java.time.ZonedDateTime
  *
  * LINKED TO ROUTINES: if what you log matches a routine activity, the time counts toward it.
  * An activity with no target is marked done as soon as you log time on it. With a target
- * ("daily 2h") it is marked done once the day's time reaches the target, and she tells you
+ * ("daily for 2h") it is marked done once the day's time reaches the target, and she tells you
  * how far along you are.
  *
  * Sessions are kept in files/time.log:   start <tab> minutes <tab> task <tab> timer or manual
@@ -436,7 +436,7 @@ object Study {
         """^(?:i )?spent (.+?) (studying|practising|practicing|working|revising|reading)$"""
     )
     private val L_VERB_RANGE = Regex(
-        """^(?:i )?(studied|practised|practiced|worked on|worked|revised|read|did) ?(.*?) from (.+?) (?:to|till|until) (.+)$"""
+        """^(?:i )?(study|studied|practised|practiced|worked on|worked|revised|read|did) ?(.*?) from (.+?) (?:to|till|until) (.+)$"""
     )
     private val L_BARE_RANGE = Regex("""^(.+?) from (.+?) (?:to|till|until) (.+)$""")
 
@@ -461,7 +461,7 @@ object Study {
     private val UNDO = Regex("""^(?:undo|delete|remove|cancel) (?:the )?last (?:time )?(?:log|session|study session)$""")
 
     private val VERB_TASK = mapOf(
-        "studied" to "study", "practised" to "practice", "practiced" to "practice",
+        "study" to "study", "studied" to "study", "practised" to "practice", "practiced" to "practice",
         "worked" to "work", "worked on" to "work", "revised" to "revision", "read" to "reading", "did" to "study"
     )
 
