@@ -19,16 +19,21 @@ import java.time.temporal.TemporalAdjusters
  *     routine | pay rent    = monthly 1
  *     routine | review      = monthly                 (any day that month)
  *     routine | insurance   = yearly 12 march
+ *     routine | japanese    = daily 19:00 for 2h      (done once 2 hours are logged)
  *
  * What you finish is remembered in files/routine.log (separate from the Brain file,
  * so the history and the charts survive any edit to the activities).
  *
  * By voice:
  *   add morning walk to my daily routine at 6 30 am
+ *   add japanese to my daily routine for 2 hours
  *   what are the remaining activities      (she reads them one by one)
  *   mark morning walk as done / mark gym as not done
  *   show my weekly routine                 (opens the chart screen)
  *   how is my routine                      (spoken summary)
+ *
+ * Study time logged by Study.kt counts toward an activity of the same name
+ * (see creditTime).
  *
  * Proactive (Proactive.kt): a reminder at an activity's time, and an evening check.
  */
@@ -51,6 +56,7 @@ object Routines {
      * dayOfMonth    monthly: the day. 0 means any day that month.
      * month, day    yearly: the date.
      * minutes       optional time of day (minutes after midnight), -1 for none.
+     * target        optional minutes of logged study time that finish it, -1 for none.
      */
     data class Spec(
         val period: Period,
@@ -58,7 +64,8 @@ object Routines {
         val dayOfMonth: Int = 0,
         val month: Int = 0,
         val day: Int = 0,
-        val minutes: Int = -1
+        val minutes: Int = -1,
+        val target: Int = -1
     ) {
         // Open-ended: due "sometime this week/month", not on a fixed day.
         val openEnded: Boolean
@@ -149,7 +156,8 @@ object Routines {
     }
 
     // ---------------------------------------------------------------
-    // Reading and writing the schedule text:  daily 06:30 | weekly mon wed | monthly 1 | yearly 12 march
+    // Reading and writing the schedule text:
+    //   daily 06:30 | weekly mon wed | monthly 1 | yearly 12 march | daily 19:00 for 2h
     // ---------------------------------------------------------------
 
     private val TIME_TOKEN = Regex("""^(\d{1,2}):(\d{2})$""")
@@ -157,8 +165,18 @@ object Routines {
 
     fun parseSpec(text: String): Spec? {
 
-        val toks = text.lowercase().replace(",", " ").split(" ").filter { it.isNotEmpty() }
+        var toks = text.lowercase().replace(",", " ").split(" ").filter { it.isNotEmpty() }
         if (toks.isEmpty()) return null
+
+        // "daily 06:30 for 2h" -> a target of 120 minutes
+        var target = -1
+        val f = toks.indexOf("for")
+
+        if (f >= 0) {
+            target = Num.parseDuration(toks.drop(f + 1).joinToString(" ")) ?: return null
+            toks = toks.take(f)
+            if (toks.isEmpty()) return null
+        }
 
         val period = Period.values().firstOrNull { it.word == toks[0] } ?: return null
 
@@ -177,7 +195,7 @@ object Routines {
             }
         }
 
-        return when (period) {
+        val spec: Spec? = when (period) {
 
             Period.DAILY ->
                 if (rest.isEmpty()) Spec(Period.DAILY, minutes = minutes) else null
@@ -206,6 +224,15 @@ object Routines {
                 if (dm == null) null else Spec(Period.YEARLY, month = dm.second, day = dm.first, minutes = minutes)
             }
         }
+
+        return spec?.copy(target = target)
+    }
+
+    // 90 -> "1h30m", 120 -> "2h", 45 -> "45m"  (the form parseSpec reads back)
+    private fun targetText(m: Int): String {
+        val h = m / 60
+        val mi = m % 60
+        return if (h == 0) "${mi}m" else if (mi == 0) "${h}h" else "${h}h${mi}m"
     }
 
     fun specText(s: Spec): String {
@@ -223,6 +250,8 @@ object Routines {
         }
 
         if (s.minutes >= 0) b.append(' ').append(hhmm(s.minutes))
+
+        if (s.target > 0) b.append(" for ").append(targetText(s.target))
 
         return b.toString()
     }
@@ -243,7 +272,9 @@ object Routines {
             Period.YEARLY -> "on ${s.day} ${cap(MONTH_NAMES[s.month - 1])}"
         }
 
-        return if (s.minutes >= 0) base + " at " + clock12(s.minutes) else base
+        val timed = if (s.minutes >= 0) base + " at " + clock12(s.minutes) else base
+
+        return if (s.target > 0) timed + ", target " + Num.durText(s.target) else timed
     }
 
     // ---------------------------------------------------------------
@@ -456,6 +487,44 @@ object Routines {
         if (reminded.add(id + "\t" + date.toString())) {
             append(ctx, "R\t" + id + "\t" + date.toString())
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Study time counts toward an activity (called by Study.log)
+    // ---------------------------------------------------------------
+
+    /**
+     * Counts logged time toward the routine activity of that name.
+     * No target: done as soon as time is logged. With a target: done once the day's
+     * (or week's / month's, for open-ended ones) time reaches it.
+     * Returns what she should add to her reply, or null.
+     */
+    @Synchronized
+    fun creditTime(ctx: Context, task: String, date: LocalDate): String? {
+
+        val t = findTask(task) ?: return null
+        val live = activeOn(t, date)
+        if (live.isEmpty()) return null
+
+        val i = live[0]
+        if (isDone(ctx, i)) return null
+
+        val target = t.spec.target
+
+        if (target <= 0) {
+            setDone(ctx, i, true)
+            return "That counts toward ${t.name}, so I marked it done."
+        }
+
+        val minutes = Study.minutesIn(ctx, task, i.due, endOf(i))
+
+        if (minutes >= target) {
+            setDone(ctx, i, true)
+            return "${t.name} target reached: ${Num.durText(minutes)} of ${Num.durText(target)}. Marked done."
+        }
+
+        return "${t.name}: ${Num.durText(minutes)} of ${Num.durText(target)} so far, " +
+            Num.durText(target - minutes) + " to go."
     }
 
     // ---------------------------------------------------------------
@@ -929,30 +998,40 @@ object Routines {
         s.trim().removePrefix("my ").removePrefix("the ").removePrefix("a ").removeSuffix(" is").trim()
 
     // "morning walk at 6 30 am" -> ("morning walk", "at 6 30 am")
+    // "japanese for 2 hours"    -> ("japanese", "for 2 hours")
     private fun splitSchedule(text: String): Pair<String, String> {
-        val m = Regex("""^(.+?) ((?:at|on|every|each) .+)$""").matchEntire(text)
+        val m = Regex("""^(.+?) ((?:at|on|every|each|for) .+)$""").matchEntire(text)
         return if (m == null) Pair(text, "") else Pair(m.groupValues[1], m.groupValues[2])
     }
 
-    // "on monday and wednesday at 6 pm" -> a schedule, or null if it can't be read.
+    // "on monday and wednesday at 6 pm for 2 hours" -> a schedule, or null if it can't be read.
     private fun buildSpec(period: Period, sched: String): Spec? {
 
-        val s0 = Mind.numWords(sched.trim())
+        var rest = Mind.numWords(sched.trim())
+        var target = -1
 
-        var dayPart = s0
+        // "for 2 hours" can come before or after "at 6 pm"
+        val fm = Regex("""(?:^|\s)for (.+?)(?=\s+at\s|$)""").find(rest)
+
+        if (fm != null) {
+            target = Num.parseDuration(fm.groupValues[1]) ?: return null
+            rest = (rest.substring(0, fm.range.first) + " " + rest.substring(fm.range.last + 1)).trim()
+        }
+
+        var dayPart = rest
         var minutes = -1
 
-        val at = Regex("""(?:^|\s)at (.+)$""").find(s0)
+        val at = Regex("""(?:^|\s)at (.+)$""").find(rest)
 
         if (at != null) {
             val clock = Mind.parseClock(at.groupValues[1]) ?: return null
             minutes = toMinutes(clock)
-            dayPart = s0.substring(0, at.range.first).trim()
+            dayPart = rest.substring(0, at.range.first).trim()
         }
 
         dayPart = dayPart.removePrefix("on ").removePrefix("every ").removePrefix("each ").trim()
 
-        return when (period) {
+        val spec: Spec? = when (period) {
 
             Period.DAILY ->
                 if (dayPart.isEmpty() || dayPart == "day") Spec(Period.DAILY, minutes = minutes) else null
@@ -980,6 +1059,8 @@ object Routines {
                 if (dm == null) null else Spec(Period.YEARLY, month = dm.second, day = dm.first, minutes = minutes)
             }
         }
+
+        return spec?.copy(target = target)
     }
 
     // text = what comes after "add ..." or before "to my daily routine"
@@ -992,7 +1073,7 @@ object Routines {
 
         var spec: Spec? = if (sched.isEmpty()) null else buildSpec(period, sched)
 
-        // The words after "at/on/every" were part of the name ("yoga at home"), not a schedule.
+        // The words after "at/on/every/for" were part of the name ("yoga at home"), not a schedule.
         if (sched.isNotEmpty() && spec == null) {
             name = (text + " " + extraSched).trim()
             sched = ""
