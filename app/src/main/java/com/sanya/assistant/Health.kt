@@ -48,7 +48,7 @@ object Health {
 
     private val KNOWN_TYPES = setOf(
         "nick", "slang", "word", "filler", "fact", "heard", "person",
-        "date", "routine", "setting", "todo", "note", "other"
+        "date", "routine", "setting", "todo", "note", "category", "other"
     )
 
     private const val DAY_MS = 86_400_000L
@@ -84,7 +84,9 @@ object Health {
             Pair(MainActivity::class.java, "MainActivity"),
             Pair(BrainActivity::class.java, "BrainActivity"),
             Pair(RoutineActivity::class.java, "RoutineActivity"),
-            Pair(HealthActivity::class.java, "HealthActivity")
+            Pair(HealthActivity::class.java, "HealthActivity"),
+            Pair(MoneyActivity::class.java, "MoneyActivity"),
+            Pair(TimeActivity::class.java, "TimeActivity")
         )
 
         for (s in screens) {
