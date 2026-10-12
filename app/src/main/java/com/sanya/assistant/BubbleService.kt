@@ -134,15 +134,33 @@ class BubbleService : Service() {
     private val tick = object : Runnable {
         override fun run() {
             try { proactiveCheck() } catch (e: Throwable) { ErrorLog.add(this@BubbleService, "Proactive check", e) }
+            try { keepWidgetFresh() } catch (e: Throwable) { ErrorLog.add(this@BubbleService, "Widget refresh", e) }
             ui.postDelayed(this, 60_000L)
         }
     }
 
+    // The home-screen widget ticks its own clock, but routines you mark by voice and
+    // pomodoro phase changes need a redraw. Only while the screen is on, to save battery.
+    private fun keepWidgetFresh() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (pm.isInteractive) SanyaWidget.refresh(this)
+    }
+
     private fun proactiveCheck() {
-        // Never interrupt: not while she is talking or listening, not on a call,
-        // not over music/video, and only while you are actually using the phone.
+        // Never interrupt: not while she is talking or listening, not on a call.
         if (pending > 0 || listening || awaiting || runner.wantsReply()) return
         if (am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_IN_COMMUNICATION) return
+
+        // A pomodoro cue is something you asked for, so it is spoken even with the screen off
+        // or music playing (you study with the phone down). It also logs finished focus sessions.
+        val cue = Pomodoro.due(this)
+        if (cue != null) {
+            say(cue)
+            SanyaWidget.refresh(this)
+            return
+        }
+
+        // Everything else only speaks over silence, and only while you are using the phone.
         if (am.isMusicActive) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         if (!pm.isInteractive) return
