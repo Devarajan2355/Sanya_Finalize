@@ -20,6 +20,7 @@ import java.util.Calendar
  *  - Habit offer            something you usually say around now, once a day, 3 h apart
  *  - Quiet hours            22:00-07:00 by default: only battery below 8% and the brief
  *  - Daily limit            4 nudges a day (battery and brief do not count against it)
+ *  - Study break            once per running study timer, after "study break" minutes
  *
  * Settings (Brain file, or by voice):
  *   setting | proactive = on / off          "stop suggesting" / "proactive on"
@@ -121,6 +122,18 @@ object Proactive {
                 p.edit().putInt("routine", today).putLong("last", now).apply()
                 return Nudge(text = evening)
             }
+        }
+
+        // ---------------------------------------------------------
+        // 2c. Study break: you started the timer yourself, so this
+        //     ignores quiet hours and the daily limit. Once per timer.
+        // ---------------------------------------------------------
+
+        val breakNudge = Study.breakDue(ctx)
+
+        if (breakNudge != null) {
+            p.edit().putLong("last", now).apply()
+            return Nudge(text = breakNudge)
         }
 
         if (quiet || count >= MAX_PER_DAY) return null
