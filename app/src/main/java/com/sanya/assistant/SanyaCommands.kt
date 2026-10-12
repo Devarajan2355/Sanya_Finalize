@@ -133,7 +133,7 @@ object CommandParser {
         Regex("\\bthank|\\bthx") to "You're welcome{n}",
         Regex("who are you|your name") to "I'm Sanya, your personal assistant",
         Regex("who am i|what.?s my name|what is my name") to "Your name is {name}",
-        Regex("what can you do|^help$") to "I can open apps, call and message, set timers, alarms and reminders, play music, search, navigate, calculate, keep notes and secrets, and learn your nicknames and slang. Say show my brain to edit what I know.",
+        Regex("what can you do|^help$") to "I can open apps, call and message, set timers, alarms and reminders, play music, search, navigate, calculate, keep notes and secrets, track your money and study time, and learn your nicknames and slang. Say show my brain to edit what I know.",
         Regex("love you") to "That's sweet. I'm always here to help"
     )
 
@@ -1051,6 +1051,10 @@ class StepRunner(
 
         if (Routines.parse(raw) != null) return true
 
+        if (Money.parse(raw) != null) return true
+
+        if (Study.parse(raw) != null) return true
+
         // Natural-language questions must bypass the broad command parser.
         val effective = followUp(raw) ?: raw
 
@@ -1114,6 +1118,18 @@ class StepRunner(
         // Remember exactly what she heard, so a correction has something to fix.
         lastOriginal = input
         lastHeardAt = System.currentTimeMillis()
+
+        // ---------------------------------------------------------
+        // 2c. Money tracker and study timer. These must come before the
+        //     general-question check, or "how much did I spend today"
+        //     would go to the web search.
+        // ---------------------------------------------------------
+
+        val money = Money.parse(raw)
+        if (money != null) return moneyCommand(money)
+
+        val study = Study.parse(raw)
+        if (study != null) return studyCommand(study)
 
         // ---------------------------------------------------------
         // 3. Follow-up ("what about japan" after a capital question)
@@ -1206,6 +1222,12 @@ class StepRunner(
 
         val routine = Routines.parse(cmd)
         if (routine != null) return routineCommand(routine)
+
+        val money = Money.parse(cmd)
+        if (money != null) return moneyCommand(money)
+
+        val study = Study.parse(cmd)
+        if (study != null) return studyCommand(study)
 
         if (IntentEngine.isGeneralQuestion(cmd)) {
             answerGeneralQuestion(cmd)
@@ -1523,6 +1545,77 @@ class StepRunner(
         }
 
         return 1
+    }
+
+    // ---------------------------------------------------------------
+    // Money tracker (Money.kt) and study timer (Study.kt)
+    // ---------------------------------------------------------------
+
+    private fun moneyCommand(c: Money.Cmd): Int {
+
+        when (c) {
+
+            is Money.Cmd.Add -> say(Money.add(ctx, c.spent, c.paise, c.note))
+
+            is Money.Cmd.Total -> say(Money.total(ctx, c.what, c.category, c.span))
+
+            is Money.Cmd.Recent -> say(Money.recent(ctx, c.span))
+
+            is Money.Cmd.Budget -> {
+                val p = c.paise
+                say(if (p == null) Money.budgetStatus(ctx) else Money.setBudget(p))
+            }
+
+            is Money.Cmd.Show ->
+                showScreen(
+                    MoneyActivity::class.java,
+                    "money report",
+                    Money.total(ctx, "net", null, "this month")
+                )
+
+            Money.Cmd.Undo -> say(Money.undoLast(ctx))
+        }
+
+        return 1
+    }
+
+    private fun studyCommand(c: Study.Cmd): Int {
+
+        when (c) {
+
+            is Study.Cmd.Log ->
+                say(Study.log(ctx, c.task, c.minutes, c.endMs ?: System.currentTimeMillis()))
+
+            is Study.Cmd.Start -> say(Study.start(ctx, c.task))
+
+            is Study.Cmd.Total -> say(Study.total(ctx, c.task, c.span))
+
+            is Study.Cmd.Say -> say(c.text)
+
+            is Study.Cmd.Show ->
+                showScreen(TimeActivity::class.java, "study time", Study.status(ctx))
+
+            Study.Cmd.Stop -> say(Study.stop(ctx))
+
+            Study.Cmd.Status -> say(Study.status(ctx))
+
+            Study.Cmd.Undo -> say(Study.undoLast(ctx))
+        }
+
+        return 1
+    }
+
+    // Opens one of her screens, or reads the answer aloud if the manifest is missing it.
+    private fun showScreen(cls: Class<*>, label: String, fallback: String) {
+
+        if (openScreen(Intent(ctx, cls))) {
+            say("Here is your $label.")
+        } else {
+            say(
+                "I couldn't open the $label screen, so here it is in words. $fallback " +
+                    "The app's manifest may be missing it."
+            )
+        }
     }
 
     // "What are the remaining activities": she reads them one at a time.
