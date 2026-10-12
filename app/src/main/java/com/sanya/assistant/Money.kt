@@ -583,3 +583,4 @@ object Money {
 
         return null
     }
+}
