@@ -37,6 +37,8 @@
         <activity android:name=".BrainActivity" android:exported="false"/>
         <activity android:name=".RoutineActivity" android:exported="false"/>
         <activity android:name=".HealthActivity" android:exported="false"/>
+        <activity android:name=".MoneyActivity" android:exported="false"/>
+        <activity android:name=".TimeActivity" android:exported="false"/>
         <service android:name=".BubbleService" android:exported="false"
             android:foregroundServiceType="microphone"/>
         <receiver android:name=".BootReceiver" android:exported="true">
