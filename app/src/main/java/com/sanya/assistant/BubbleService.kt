@@ -87,6 +87,9 @@ class BubbleService : Service() {
         const val IDLE = 0xFF6C5CE7.toInt()
         const val LISTENING = 0xFF00B894.toInt()
         const val HANDS_FREE = 0xFFE17055.toInt()
+
+        // True while the service is running, so a pomodoro alarm knows it can ask her to speak.
+        @Volatile var alive = false
     }
 
     override fun onBind(i: Intent?): IBinder? = null
@@ -98,6 +101,7 @@ class BubbleService : Service() {
     override fun onCreate() {
         ErrorLog.install(this)
         super.onCreate()
+        alive = true
         Brain.setup(this)
         wakeRx = wake()
         hearingMode = if (googleHearing()) "google" else "offline"
@@ -156,6 +160,7 @@ class BubbleService : Service() {
         val cue = Pomodoro.due(this)
         if (cue != null) {
             say(cue)
+            Pomodoro.notify(this, cue)
             SanyaWidget.refresh(this)
             return
         }
@@ -182,6 +187,8 @@ class BubbleService : Service() {
         startForeground(1, notif())
         loadEars()
         applyHearing()
+        // A pomodoro alarm asks her to say the cue out loud.
+        intent?.getStringExtra("say")?.let { text -> ui.post { say(text) } }
         return START_STICKY
     }
 
@@ -503,6 +510,7 @@ class BubbleService : Service() {
     }
 
     override fun onDestroy() {
+        alive = false
         Learner.flush(this)
         ui.removeCallbacksAndMessages(null)
         unmuteBeep()
