@@ -120,6 +120,15 @@ class BubbleService : Service() {
                 })
             }
         }
+
+        // Boot Piper TTS on a background thread.
+        Thread {
+            if (NaturalVoice.isInstalled(this)) {
+                val ok = NaturalVoice.init(this)
+                if (ok) ui.post { show("Natural voice ready") }
+            }
+        }.also { it.isDaemon = true }.start()
+
         runner = StepRunner(this, { say(it) }, { show(it, 8000L) })
         ears = Ears(this,
             onPartial = { p -> ui.post { if (awaiting || wakeRx.containsMatchIn(p)) show("🎤 $p") } },
@@ -187,6 +196,15 @@ class BubbleService : Service() {
         startForeground(1, notif())
         loadEars()
         applyHearing()
+
+        // Retry Piper init if it was not ready when the service started
+        // (e.g. user just downloaded the voice model from the settings screen).
+        if (!NaturalVoice.isReady && NaturalVoice.isInstalled(this)) {
+            Thread {
+                NaturalVoice.init(this)
+            }.also { it.isDaemon = true }.start()
+        }
+
         // A pomodoro alarm asks her to say the cue out loud.
         intent?.getStringExtra("say")?.let { text -> ui.post { say(text) } }
         return START_STICKY
@@ -332,13 +350,33 @@ class BubbleService : Service() {
     private fun say(s: String) {
         show(s)
         unmuteBeep()
-        sr?.let { if (listening) { it.cancel(); finish(it) } }   // never listen to my own voice
-        val t = tts ?: return
-        if (!ttsReady) return
-        ears?.paused = true                                       // offline ears also pause while I talk
+
+        // Stop Google voice listener — never listen to our own speech.
+        sr?.let { if (listening) { it.cancel(); finish(it) } }
+
+        // Pause offline ears too.
+        ears?.paused = true
         pending++
+
+        if (NaturalVoice.isReady) {
+            // Piper TTS — runs on its own thread, calls back when done.
+            Thread {
+                NaturalVoice.speak(s)
+                ui.post {
+                    pending = maxOf(0, pending - 1)
+                    resume()
+                }
+            }.also { it.isDaemon = true }.start()
+            return
+        }
+
+        // ---- Original Android TTS fallback (unchanged) ----
+        val t = tts ?: run { pending = maxOf(0, pending - 1); return }
+        if (!ttsReady) { pending = maxOf(0, pending - 1); return }
+
         if (t.speak(s, TextToSpeech.QUEUE_ADD, null, "u" + System.nanoTime()) == TextToSpeech.ERROR) {
-            pending = maxOf(0, pending - 1); resume()
+            pending = maxOf(0, pending - 1)
+            resume()
         }
     }
 
@@ -519,6 +557,8 @@ class BubbleService : Service() {
         if (::bubble.isInitialized) wm.removeView(bubble)
         if (::caption.isInitialized) wm.removeView(caption)
         sr?.destroy(); tts?.shutdown()
+        NaturalVoice.stop()
+        NaturalVoice.release()
         val e = ears
         ears = null
         e?.stop()
