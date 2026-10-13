@@ -126,7 +126,7 @@
         android:textSize="13sp" />
 
     <!-- Fills the space so the buttons sit at the bottom. -->
-    <View
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1" />
