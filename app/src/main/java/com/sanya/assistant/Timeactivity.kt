@@ -44,6 +44,8 @@ class TimeActivity : Activity() {
     private lateinit var box: LinearLayout
     private lateinit var timerBtn: Button
     private lateinit var pomoBtn: Button
+    private lateinit var pomoRow: LinearLayout
+    private lateinit var pauseBtn: Button
 
     // Redraws the timer line every second so the countdown moves.
     private val ticker = object : Runnable {
@@ -132,6 +134,23 @@ class TimeActivity : Activity() {
         bottom.addView(pomoBtn)
         root.addView(bottom)
 
+        // Only shown while a pomodoro is running.
+        pauseBtn = action("Pause") { togglePause() }
+        pomoRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+        }
+        pomoRow.addView(pauseBtn)
+        pomoRow.addView(action("+5 min") {
+            toast(Pomodoro.extend(this, 5))
+            render()
+        })
+        pomoRow.addView(action("Skip break") {
+            toast(Pomodoro.skipBreak(this))
+            render()
+        })
+        root.addView(pomoRow)
+
         val bottom2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         bottom2.addView(action("+ Log time") { logByHand() })
         bottom2.addView(action("Share report") { share() })
@@ -184,8 +203,11 @@ class TimeActivity : Activity() {
         if (Pomodoro.running(this)) {
             timerLine.text = "Pomodoro: " + Pomodoro.statusLine(this)
             pomoBtn.text = "Stop pomodoro"
+            pomoRow.visibility = View.VISIBLE
+            pauseBtn.text = if (Pomodoro.paused(this)) "Resume" else "Pause"
         } else {
             pomoBtn.text = "Pomodoro"
+            pomoRow.visibility = View.GONE
             if (running == null) {
                 timerLine.text = "No timer running"
             } else {
@@ -385,6 +407,13 @@ class TimeActivity : Activity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun togglePause() {
+
+        toast(if (Pomodoro.paused(this)) Pomodoro.resume(this) else Pomodoro.pause(this))
+
+        render()
     }
 
     private fun logByHand() {
