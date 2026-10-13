@@ -1875,17 +1875,114 @@ class StepRunner(
         return null
     }
 
+    
     private fun answerGeneralQuestion(raw: String) {
-
-        // Something you taught her always beats the internet.
+     
+        // 1. Something you personally taught her — always wins.
         val taught = Mind.taughtAnswer(raw)
-
         if (taught != null) {
             rememberKnowledge(IntentEngine.normalizeQuestion(raw), taught)
             say(taught)
             return
         }
-
+     
+        val question = IntentEngine.normalizeQuestion(raw)
+        if (question.isEmpty()) { safeSay("I didn't catch the question"); return }
+     
+        knowledgeExecutor.execute {
+            try {
+     
+                // 2. KnowledgeStore: cached answer from a previous web search.
+                val local = KnowledgeStore.find(ctx, question)
+                if (local != null) {
+                    val natural = SanyaResponseEngine.answer(question, local.answer)
+                    if (natural != null) {
+                        rememberKnowledge(question, natural)
+                        safeSay(natural)
+                        return@execute
+                    }
+                }
+     
+                // 3. Offline knowledge database (no internet needed).
+                if (OfflineKnowledge.isOpen) {
+                    val direct = OfflineKnowledge.directAnswer(question)
+                    if (direct != null) {
+                        val natural = SanyaResponseEngine.answer(question, direct)
+                        if (natural != null) {
+                            rememberKnowledge(question, natural)
+                            safeSay(natural)
+                            return@execute
+                        }
+                    }
+                }
+     
+                // 4. Local LLM with offline-knowledge context (no internet).
+                if (LocalLLM.isReady) {
+                    val context = if (OfflineKnowledge.isOpen)
+                        OfflineKnowledge.findContext(question) else null
+     
+                    val llmAnswer = if (context != null) {
+                        // Give the LLM the Wikipedia paragraph as background.
+                        LocalLLM.complete(
+                            system = "You are Sanya, a concise voice assistant. " +
+                                     "Use the background knowledge below to answer in 1-2 short sentences. " +
+                                     "No markdown. If the background doesn't help, answer from your own knowledge.\n\n" +
+                                     context,
+                            user   = question,
+                            temp   = 0.3f
+                        )
+                    } else {
+                        LocalLLM.answerQuestion(question)
+                    }
+     
+                    if (!llmAnswer.isNullOrBlank()) {
+                        val natural = SanyaResponseEngine.answer(question, llmAnswer)
+                            ?: llmAnswer  // LLM output is already natural — use it directly
+                        KnowledgeStore.save(ctx, question, natural)
+                        rememberKnowledge(question, natural)
+                        safeSay(natural)
+                        return@execute
+                    }
+                }
+     
+                // 5. AIBrain built-ins (offline, unchanged).
+                val builtIn = AIBrain.answer(raw)
+                if (builtIn != null) {
+                    val natural = SanyaResponseEngine.answer(question, builtIn) ?: builtIn
+                    KnowledgeStore.save(ctx, question, natural)
+                    rememberKnowledge(question, natural)
+                    safeSay(natural)
+                    return@execute
+                }
+     
+                // 6. WebSearch — needs internet (unchanged from original).
+                if (!online()) {
+                    safeSay("I don't know that yet, and I can't search without internet right now.")
+                    return@execute
+                }
+     
+                val webAnswer = WebSearch.answer(question)
+                if (webAnswer.isNullOrBlank()) {
+                    safeSay("I couldn't find a reliable answer right now.")
+                    return@execute
+                }
+     
+                val natural = SanyaResponseEngine.answer(question, webAnswer)
+                if (natural.isNullOrBlank()) {
+                    safeSay("I couldn't find a reliable answer right now.")
+                    return@execute
+                }
+     
+                KnowledgeStore.save(ctx, question, natural)
+                rememberKnowledge(question, natural)
+                safeSay(natural)
+     
+            } catch (e: Throwable) {
+                ErrorLog.add(ctx, "Answering a question", e)
+                safeSay("I couldn't answer that right now.")
+            }
+        }
+    }
         val question =
             IntentEngine.normalizeQuestion(raw)
 
