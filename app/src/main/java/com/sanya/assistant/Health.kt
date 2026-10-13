@@ -233,6 +233,69 @@ object Health {
             }
         )
 
+        // ---- AI brain (LocalLLM) ----
+
+        out.add(
+            if (LocalLLM.isInstalled(ctx)) {
+                Check(
+                    "AI brain", "On-device LLM",
+                    "SmolLM2-360M installed (${LocalLLM.modelFile(ctx).length() / 1_048_576} MB). " +
+                        if (LocalLLM.isReady) "Loaded and ready." else "Not yet loaded — will load on next Start.",
+                    Level.OK
+                )
+            } else {
+                Check(
+                    "AI brain", "On-device LLM",
+                    "Not downloaded. Open the start screen and tap Download AI brain (~200 MB). " +
+                        "Without it, hard questions go to the internet or stay unanswered offline.",
+                    Level.INFO,
+                    "startscreen"
+                )
+            }
+        )
+
+        // ---- Offline knowledge base (OfflineKnowledge) ----
+
+        out.add(
+            if (OfflineKnowledge.isInstalled(ctx)) {
+                Check(
+                    "AI brain", "Offline knowledge base",
+                    "Wikipedia knowledge base installed (${OfflineKnowledge.dbFile(ctx).length() / 1_048_576} MB). " +
+                        if (OfflineKnowledge.isOpen) "Open and ready." else "Installed but not open — will open on next Start.",
+                    Level.OK
+                )
+            } else {
+                Check(
+                    "AI brain", "Offline knowledge base",
+                    "Not downloaded. Open the start screen and tap Download offline knowledge base (~100 MB). " +
+                        "Without it, fact questions need internet.",
+                    Level.INFO,
+                    "startscreen"
+                )
+            }
+        )
+
+        // ---- Natural voice (NaturalVoice / Piper TTS) ----
+
+        out.add(
+            if (NaturalVoice.isInstalled(ctx)) {
+                Check(
+                    "Voice", "Natural TTS (Piper)",
+                    "Piper voice installed (${NaturalVoice.modelFile(ctx).length() / 1_048_576} MB). " +
+                        if (NaturalVoice.isReady) "Active — using natural voice." else "Installed, loads on next Start.",
+                    Level.OK
+                )
+            } else {
+                Check(
+                    "Voice", "Natural TTS (Piper)",
+                    "Not downloaded. Using Android's built-in TTS. " +
+                        "Tap Download natural voice on the start screen (~60 MB) for a much more natural sound.",
+                    Level.INFO,
+                    "startscreen"
+                )
+            }
+        )
+
         // ---- Her mind ----
 
         val counts = listOf("nick", "slang", "word", "fact", "heard", "person", "date", "routine")
