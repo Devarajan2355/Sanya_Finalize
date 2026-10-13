@@ -943,6 +943,17 @@ class StepRunner(
 
     init {
         Brain.setup(ctx)
+
+        // Boot the LLM and knowledge base on a background thread so they are
+        // ready by the time the user speaks.
+        Thread {
+            if (LocalLLM.isInstalled(ctx)) {
+                LocalLLM.load(ctx)
+            }
+            if (OfflineKnowledge.isInstalled(ctx)) {
+                OfflineKnowledge.open(ctx)
+            }
+        }.also { it.isDaemon = true }.start()
     }
 
     // Learned slang first, then normal parsing.
@@ -1143,6 +1154,16 @@ class StepRunner(
         // ---------------------------------------------------------
 
         val effective = followUp(raw) ?: raw
+
+        // ---------------------------------------------------------
+        // 3b. Explicit LLM tasks — translate, summarise, explain, write, correct
+        // ---------------------------------------------------------
+
+        if (LocalLLM.isReady && LocalLLM.looksLikeLLMTask(effective)) {
+            Mind.record(ctx, Brain.clean(effective), true)
+            handleLLMTask(effective)
+            return 1
+        }
 
         // ---------------------------------------------------------
         // 4. General knowledge question
@@ -1875,9 +1896,11 @@ class StepRunner(
         return null
     }
 
-    
+    // New pipeline:
+    //   taught fact -> KnowledgeStore cache -> offline knowledge DB
+    //   -> local LLM (with DB context, or alone) -> AIBrain built-ins -> WebSearch
     private fun answerGeneralQuestion(raw: String) {
-     
+
         // 1. Something you personally taught her — always wins.
         val taught = Mind.taughtAnswer(raw)
         if (taught != null) {
@@ -1885,13 +1908,13 @@ class StepRunner(
             say(taught)
             return
         }
-     
+
         val question = IntentEngine.normalizeQuestion(raw)
         if (question.isEmpty()) { safeSay("I didn't catch the question"); return }
-     
+
         knowledgeExecutor.execute {
             try {
-     
+
                 // 2. KnowledgeStore: cached answer from a previous web search.
                 val local = KnowledgeStore.find(ctx, question)
                 if (local != null) {
@@ -1902,7 +1925,7 @@ class StepRunner(
                         return@execute
                     }
                 }
-     
+
                 // 3. Offline knowledge database (no internet needed).
                 if (OfflineKnowledge.isOpen) {
                     val direct = OfflineKnowledge.directAnswer(question)
@@ -1915,26 +1938,26 @@ class StepRunner(
                         }
                     }
                 }
-     
+
                 // 4. Local LLM with offline-knowledge context (no internet).
                 if (LocalLLM.isReady) {
                     val context = if (OfflineKnowledge.isOpen)
                         OfflineKnowledge.findContext(question) else null
-     
+
                     val llmAnswer = if (context != null) {
                         // Give the LLM the Wikipedia paragraph as background.
                         LocalLLM.complete(
                             system = "You are Sanya, a concise voice assistant. " +
-                                     "Use the background knowledge below to answer in 1-2 short sentences. " +
-                                     "No markdown. If the background doesn't help, answer from your own knowledge.\n\n" +
-                                     context,
-                            user   = question,
-                            temp   = 0.3f
+                                "Use the background knowledge below to answer in 1-2 short sentences. " +
+                                "No markdown. If the background doesn't help, answer from your own knowledge.\n\n" +
+                                context,
+                            user = question,
+                            temp = 0.3f
                         )
                     } else {
                         LocalLLM.answerQuestion(question)
                     }
-     
+
                     if (!llmAnswer.isNullOrBlank()) {
                         val natural = SanyaResponseEngine.answer(question, llmAnswer)
                             ?: llmAnswer  // LLM output is already natural — use it directly
@@ -1944,8 +1967,8 @@ class StepRunner(
                         return@execute
                     }
                 }
-     
-                // 5. AIBrain built-ins (offline, unchanged).
+
+                // 5. AIBrain built-ins (offline).
                 val builtIn = AIBrain.answer(raw)
                 if (builtIn != null) {
                     val natural = SanyaResponseEngine.answer(question, builtIn) ?: builtIn
@@ -1954,134 +1977,100 @@ class StepRunner(
                     safeSay(natural)
                     return@execute
                 }
-     
-                // 6. WebSearch — needs internet (unchanged from original).
+
+                // 6. WebSearch — needs internet.
                 if (!online()) {
                     safeSay("I don't know that yet, and I can't search without internet right now.")
                     return@execute
                 }
-     
+
                 val webAnswer = WebSearch.answer(question)
                 if (webAnswer.isNullOrBlank()) {
                     safeSay("I couldn't find a reliable answer right now.")
                     return@execute
                 }
-     
+
                 val natural = SanyaResponseEngine.answer(question, webAnswer)
                 if (natural.isNullOrBlank()) {
                     safeSay("I couldn't find a reliable answer right now.")
                     return@execute
                 }
-     
+
                 KnowledgeStore.save(ctx, question, natural)
                 rememberKnowledge(question, natural)
                 safeSay(natural)
-     
+
             } catch (e: Throwable) {
                 ErrorLog.add(ctx, "Answering a question", e)
                 safeSay("I couldn't answer that right now.")
             }
         }
     }
-        val question =
-            IntentEngine.normalizeQuestion(raw)
 
-        if (question.isEmpty()) {
-            safeSay("I didn't catch the question")
-            return
-        }
-
+    // Explicit LLM tasks — translate, summarise, explain, write, correct
+    private fun handleLLMTask(raw: String) {
         knowledgeExecutor.execute {
-
             try {
-                // 1. Reuse only validated local knowledge.
-                val local =
-                    KnowledgeStore.find(ctx, question)
+                val t = raw.lowercase().trim()
 
-                if (local != null) {
-                    val natural =
-                        SanyaResponseEngine.answer(
-                            question,
-                            local.answer
-                        )
+                val result: String? = when {
 
-                    if (natural != null) {
-                        rememberKnowledge(question, natural)
-                        safeSay(natural)
-                        return@execute
+                    // "translate X to Tamil / Hindi / French …"
+                    Regex("""translate (.+) to ([a-z ]+)""").containsMatchIn(t) -> {
+                        val m = Regex("""translate (.+) to ([a-z ]+)""").find(t)!!
+                        LocalLLM.translate(m.groupValues[1].trim(), m.groupValues[2].trim())
                     }
-                }
 
-                // 2. The existing offline brain still gets first chance for
-                // supported built-in facts/calculation-style questions.
-                val builtIn =
-                    AIBrain.answer(raw)
-
-                if (builtIn != null) {
-                    val natural =
-                        SanyaResponseEngine.answer(
-                            question,
-                            builtIn
-                        )
-
-                    if (natural != null) {
-                        KnowledgeStore.save(
-                            ctx,
-                            question,
-                            natural
-                        )
-                        rememberKnowledge(question, natural)
-                        safeSay(natural)
-                        return@execute
+                    // "translate this / that / it" — use last LLM answer as source
+                    t.contains("translate this") || t.contains("translate that") -> {
+                        val src = lastKnowledgeAnswer.ifBlank { "nothing to translate" }
+                        val lang = Regex("""to ([a-z]+)$""").find(t)?.groupValues?.get(1) ?: "Tamil"
+                        LocalLLM.translate(src, lang)
                     }
+
+                    // "summarise / summarize"
+                    t.contains("summar") -> {
+                        val src = Regex("""summar(?:ise|ize) (.+)""").find(t)
+                            ?.groupValues?.get(1)
+                            ?: lastKnowledgeAnswer
+                        LocalLLM.summarise(src.ifBlank { raw })
+                    }
+
+                    // "explain X in simple words"
+                    t.contains("explain") -> {
+                        val concept = t.removePrefix("explain").removePrefix("what is").trim()
+                        LocalLLM.explain(concept.ifBlank { raw })
+                    }
+
+                    // "correct this / fix my grammar"
+                    t.contains("correct") || t.contains("fix my grammar") || t.contains("fix this") -> {
+                        val src = Regex("""(?:correct|fix)\s+(?:this|that|my grammar[:]?\s*)(.*)""")
+                            .find(t)?.groupValues?.get(1)?.trim()
+                            ?: lastKnowledgeAnswer
+                        LocalLLM.correct(src.ifBlank { raw })
+                    }
+
+                    // "write a poem / story / joke / essay …"
+                    t.contains("write") || t.contains("tell me a story") || t.contains("poem") -> {
+                        LocalLLM.create(raw)
+                    }
+
+                    // "difference between X and Y"
+                    t.contains("difference between") -> LocalLLM.explain(raw)
+
+                    // Everything else: general LLM question
+                    else -> LocalLLM.ask(raw)
                 }
 
-                // 3. New knowledge requires a network connection.
-                if (!online()) {
-                    safeSay(
-                        "I don't know that yet, and I can't search the internet right now."
-                    )
-                    return@execute
+                if (!result.isNullOrBlank()) {
+                    rememberKnowledge(raw, result)
+                    safeSay(result)
+                } else {
+                    safeSay("I couldn't work that out right now.")
                 }
-
-                // 4. WebSearch dynamically resolves people, offices,
-                // organizations, places, and other knowledge entities.
-                val answer =
-                    WebSearch.answer(question)
-
-                if (answer.isNullOrBlank()) {
-                    safeSay("I couldn't find a reliable answer right now.")
-                    return@execute
-                }
-
-                // 5. Convert the retrieved answer into a cleaner,
-                // more natural response before storing and speaking it.
-                val natural =
-                    SanyaResponseEngine.answer(
-                        question,
-                        answer
-                    )
-
-                if (natural.isNullOrBlank()) {
-                    safeSay("I couldn't find a reliable answer right now.")
-                    return@execute
-                }
-
-                // 6. Cache only the final validated response.
-                KnowledgeStore.save(
-                    ctx,
-                    question,
-                    natural
-                )
-
-                rememberKnowledge(question, natural)
-                safeSay(natural)
-
             } catch (e: Throwable) {
-                ErrorLog.add(ctx, "Answering a question", e)
-                safeSay(
-                    "I couldn't answer that right now."
-                )
+                ErrorLog.add(ctx, "LLM task", e)
+                safeSay("I couldn't do that right now.")
             }
         }
     }
