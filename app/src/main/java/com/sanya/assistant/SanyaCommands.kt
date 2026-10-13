@@ -133,7 +133,7 @@ object CommandParser {
         Regex("\\bthank|\\bthx") to "You're welcome{n}",
         Regex("who are you|your name") to "I'm Sanya, your personal assistant",
         Regex("who am i|what.?s my name|what is my name") to "Your name is {name}",
-        Regex("what can you do|^help$") to "I can open apps, call and message, set timers, alarms and reminders, play music, search, navigate, calculate, keep notes and secrets, track your money and study time, and learn your nicknames and slang. Say show my brain to edit what I know.",
+        Regex("what can you do|^help$") to "I can open apps, call and message, set timers, alarms and reminders, play music, search, navigate, calculate, keep notes and secrets, track your money and study time, run pomodoro focus sessions, and learn your nicknames and slang. Say show my brain to edit what I know.",
         Regex("love you") to "That's sweet. I'm always here to help"
     )
 
@@ -1051,6 +1051,8 @@ class StepRunner(
 
         if (Routines.parse(raw) != null) return true
 
+        if (Pomodoro.parse(raw) != null) return true
+
         if (Money.parse(raw) != null) return true
 
         if (Study.parse(raw) != null) return true
@@ -1120,10 +1122,15 @@ class StepRunner(
         lastHeardAt = System.currentTimeMillis()
 
         // ---------------------------------------------------------
-        // 2c. Money tracker and study timer. These must come before the
+        // 2c. Pomodoro, money tracker and study timer. Pomodoro comes first
+        //     ("start pomodoro timer" would otherwise start a study timer
+        //     called "pomodoro"). All three must come before the
         //     general-question check, or "how much did I spend today"
         //     would go to the web search.
         // ---------------------------------------------------------
+
+        val pomo = Pomodoro.parse(raw)
+        if (pomo != null) return pomodoroCommand(pomo)
 
         val money = Money.parse(raw)
         if (money != null) return moneyCommand(money)
@@ -1222,6 +1229,9 @@ class StepRunner(
 
         val routine = Routines.parse(cmd)
         if (routine != null) return routineCommand(routine)
+
+        val pomo = Pomodoro.parse(cmd)
+        if (pomo != null) return pomodoroCommand(pomo)
 
         val money = Money.parse(cmd)
         if (money != null) return moneyCommand(money)
@@ -1544,12 +1554,22 @@ class StepRunner(
             Routines.Cmd.TodayStatus -> say(Routines.todayLine(ctx))
         }
 
+        // A routine you just changed by voice should show on the home-screen widget.
+        SanyaWidget.refresh(ctx)
+
         return 1
     }
 
     // ---------------------------------------------------------------
-    // Money tracker (Money.kt) and study timer (Study.kt)
+    // Pomodoro (Pomodoro.kt), money tracker (Money.kt), study timer (Study.kt)
     // ---------------------------------------------------------------
+
+    private fun pomodoroCommand(c: Pomodoro.Cmd): Int {
+
+        say(Pomodoro.run(ctx, c))
+
+        return 1
+    }
 
     private fun moneyCommand(c: Money.Cmd): Int {
 
@@ -1601,6 +1621,9 @@ class StepRunner(
 
             Study.Cmd.Undo -> say(Study.undoLast(ctx))
         }
+
+        // A timer or a logged session changes what the home-screen widget shows.
+        SanyaWidget.refresh(ctx)
 
         return 1
     }
