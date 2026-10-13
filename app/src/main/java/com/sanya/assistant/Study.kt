@@ -112,7 +112,7 @@ object Study {
     }
 
     @Synchronized
-    fun delete(ctx: Context, s: Session): Boolean {
+    private fun removeLine(ctx: Context, s: Session): Boolean {
 
         val f = file(ctx)
         if (!f.exists()) return false
@@ -123,6 +123,16 @@ object Study {
 
         lines.removeAt(i)
         f.writeText(if (lines.isEmpty()) "" else lines.joinToString("\n") + "\n")
+
+        return true
+    }
+
+    /** Removes one session. If it had counted toward a routine activity, that is checked again. */
+    fun delete(ctx: Context, s: Session): Boolean {
+
+        if (!removeLine(ctx, s)) return false
+
+        Routines.reviewTime(ctx, s.task, s.date)
 
         return true
     }
@@ -162,9 +172,12 @@ object Study {
 
         val last = all(ctx).maxByOrNull { it.start } ?: return "There is nothing to undo."
 
-        delete(ctx, last)
+        removeLine(ctx, last)
 
-        return "Removed " + Num.durText(last.minutes) + " on " + last.task + "."
+        val note = Routines.reviewTime(ctx, last.task, last.date)
+
+        return "Removed " + Num.durText(last.minutes) + " on " + last.task + "." +
+            (if (note != null) " $note" else "")
     }
 
     // ---------------------------------------------------------------
@@ -183,6 +196,10 @@ object Study {
     }
 
     fun start(ctx: Context, name: String): String {
+
+        if (Pomodoro.running(ctx)) {
+            return "A pomodoro is running. Say stop pomodoro first, then start the timer."
+        }
 
         val now = System.currentTimeMillis()
         val r = running(ctx)
