@@ -53,7 +53,11 @@ class SanyaWidget : AppWidgetProvider() {
                 ACTION_TOGGLE -> toggle(context, intent.getStringExtra("name") ?: "")
                 ACTION_POMO -> message(
                     context,
-                    if (Pomodoro.running(context)) Pomodoro.stop(context) else Pomodoro.start(context, "study")
+                    when {
+                        Pomodoro.running(context) && Pomodoro.paused(context) -> Pomodoro.resume(context)
+                        Pomodoro.running(context) -> Pomodoro.stop(context)
+                        else -> Pomodoro.start(context, "study")
+                    }
                 )
                 ACTION_TIMER -> message(context, studyTimer(context))
             }
@@ -156,7 +160,13 @@ class SanyaWidget : AppWidgetProvider() {
             val study = Study.running(ctx)
             val now = System.currentTimeMillis()
 
-            if (pomo != null) {
+            if (pomo != null && Pomodoro.paused(ctx)) {
+
+                v.setTextViewText(R.id.w_timer_label, "⏸ " + Pomodoro.statusLine(ctx))
+                v.setChronometer(R.id.w_clock, SystemClock.elapsedRealtime(), null, false)
+                v.setViewVisibility(R.id.w_clock, View.GONE)
+
+            } else if (pomo != null) {
 
                 val cur = Pomodoro.locate(pomo, now)
                 val word = when (cur.phase) {
@@ -227,7 +237,14 @@ class SanyaWidget : AppWidgetProvider() {
 
             // ---- buttons ----
 
-            v.setTextViewText(R.id.w_btn_pomo, if (pomo != null) "■ Stop pomodoro" else "\uD83C\uDF45 Pomodoro")
+            v.setTextViewText(
+                R.id.w_btn_pomo,
+                when {
+                    pomo != null && Pomodoro.paused(ctx) -> "▶ Resume pomodoro"
+                    pomo != null -> "■ Stop pomodoro"
+                    else -> "\uD83C\uDF45 Pomodoro"
+                }
+            )
             v.setOnClickPendingIntent(R.id.w_btn_pomo, action(ctx, ACTION_POMO))
 
             v.setTextViewText(R.id.w_btn_timer, if (study != null) "■ Stop timer" else "▶ Study timer")
