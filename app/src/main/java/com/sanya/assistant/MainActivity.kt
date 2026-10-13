@@ -72,6 +72,9 @@ class MainActivity : Activity() {
             addView(wide("Study time (timer and log)") { openScreen(TimeActivity::class.java, "TimeActivity") })
             addView(wide("Edit rules (organised: nicknames, slang, facts...)") { openScreen(BrainActivity::class.java, "BrainActivity") })
             addView(wide("Keep Sanya alive (Xiaomi settings)") { keepAlive() })
+            addView(wide("Download AI brain — reasoning, explanation, translation (~200 MB)") { downloadLLM() })
+            addView(wide("Download offline knowledge base — Wikipedia facts (~100 MB)") { downloadKnowledge() })
+            addView(wide("Download natural voice — Piper TTS, sounds more human (~60 MB)") { downloadVoice() })
             addView(editor)
         })
         refreshModel()
@@ -95,6 +98,20 @@ class MainActivity : Activity() {
         }
         dl.text = "Download ${ModelStore.label(url)} voice (about 40 MB)"
         dl.visibility = if (ok) View.GONE else View.VISIBLE
+
+        // ---- LLM / knowledge / natural voice status ----
+        val llmReady = LocalLLM.isInstalled(this)
+        val wikiReady = OfflineKnowledge.isInstalled(this)
+        val piperReady = NaturalVoice.isInstalled(this)
+
+        val extras = buildString {
+            if (!llmReady) append("\n• AI brain not downloaded yet (adds reasoning, translation, explanation).")
+            if (!wikiReady) append("\n• Offline knowledge base not downloaded yet (adds Wikipedia facts offline).")
+            if (!piperReady) append("\n• Natural voice not downloaded yet (sounds more human).")
+        }
+        if (extras.isNotEmpty()) {
+            status.text = status.text.toString() + extras
+        }
 
         val missing = missingScreens()
         if (missing.isNotEmpty()) {
@@ -148,6 +165,65 @@ class MainActivity : Activity() {
                     stopService(Intent(this, BubbleService::class.java))
                     refreshModel()
                 } else status.text = "Download failed: $err"
+            }
+        }.start()
+    }
+
+    private fun downloadLLM() {
+        if (LocalLLM.isInstalled(this)) { toast("AI brain already installed"); return }
+        status.text = "Downloading AI brain…"
+        Thread {
+            val err = LocalLLM.download(this) { p ->
+                runOnUiThread { status.text = "Downloading AI brain… $p%" }
+            }
+            runOnUiThread {
+                if (err == null) {
+                    status.text = "AI brain downloaded. Tap Start Sanya."
+                    // Reload the running service so it picks up the new model.
+                    stopService(Intent(this, BubbleService::class.java))
+                    refreshModel()
+                } else {
+                    status.text = "AI brain download failed: $err"
+                }
+            }
+        }.start()
+    }
+
+    private fun downloadKnowledge() {
+        if (OfflineKnowledge.isInstalled(this)) { toast("Knowledge base already installed"); return }
+        status.text = "Downloading offline knowledge base…"
+        Thread {
+            val err = OfflineKnowledge.download(this) { p ->
+                runOnUiThread { status.text = "Downloading knowledge base… $p%" }
+            }
+            runOnUiThread {
+                if (err == null) {
+                    // Open the DB immediately so the running service can use it.
+                    OfflineKnowledge.open(this)
+                    status.text = "Knowledge base ready."
+                    refreshModel()
+                } else {
+                    status.text = "Knowledge base download failed: $err"
+                }
+            }
+        }.start()
+    }
+
+    private fun downloadVoice() {
+        if (NaturalVoice.isInstalled(this)) { toast("Natural voice already installed"); return }
+        status.text = "Downloading natural voice…"
+        Thread {
+            val err = NaturalVoice.download(this) { p ->
+                runOnUiThread { status.text = "Downloading natural voice… $p%" }
+            }
+            runOnUiThread {
+                if (err == null) {
+                    stopService(Intent(this, BubbleService::class.java))
+                    status.text = "Natural voice downloaded. Tap Start Sanya."
+                    refreshModel()
+                } else {
+                    status.text = "Natural voice download failed: $err"
+                }
             }
         }.start()
     }
