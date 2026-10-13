@@ -404,6 +404,7 @@ object Routines {
     private val done = HashMap<String, Boolean>()
     private val seen = HashMap<String, String>()
     private val reminded = HashSet<String>()
+    private val credited = HashSet<String>()      // done because logged time reached it, not by hand
     private var loaded = false
 
     private fun file(ctx: Context) = File(ctx.filesDir, "routine.log")
@@ -424,6 +425,8 @@ object Routines {
                     "D" -> if (p.size >= 4) done[p[1] + "\t" + p[2]] = p[3] == "1"
                     "S" -> if (p.size >= 3) seen[p[1]] = p[2]
                     "R" -> if (p.size >= 3) reminded.add(p[1] + "\t" + p[2])
+                    "C" -> if (p.size >= 3) credited.add(p[1] + "\t" + p[2])
+                    "U" -> if (p.size >= 3) credited.remove(p[1] + "\t" + p[2])
                 }
             }
         } catch (e: Exception) {
@@ -450,6 +453,16 @@ object Routines {
         val id = idOf(i.task)
         done[id + "\t" + i.key] = value
         append(ctx, "D\t" + id + "\t" + i.key + "\t" + (if (value) "1" else "0"))
+
+        // Marking it yourself (either way) means it is no longer "done by logged time".
+        if (credited.remove(id + "\t" + i.key)) append(ctx, "U\t" + id + "\t" + i.key)
+    }
+
+    @Synchronized
+    private fun markCredited(ctx: Context, i: Instance) {
+        load(ctx)
+        val id = idOf(i.task)
+        if (credited.add(id + "\t" + i.key)) append(ctx, "C\t" + id + "\t" + i.key)
     }
 
     // The first day she knew about this task. History before that is not counted against you.
@@ -513,6 +526,7 @@ object Routines {
 
         if (target <= 0) {
             setDone(ctx, i, true)
+            markCredited(ctx, i)
             return "That counts toward ${t.name}, so I marked it done."
         }
 
@@ -520,6 +534,7 @@ object Routines {
 
         if (minutes >= target) {
             setDone(ctx, i, true)
+            markCredited(ctx, i)
             return "${t.name} target reached: ${Num.durText(minutes)} of ${Num.durText(target)}. Marked done."
         }
 
@@ -530,6 +545,35 @@ object Routines {
     // ---------------------------------------------------------------
     // Today
     // ---------------------------------------------------------------
+
+    /**
+     * Called after logged time is deleted. If the activity was marked done only because of
+     * that time, and the time left no longer earns it, it is un-marked. Something you
+     * marked by hand is never touched. Returns what she should say, or null.
+     */
+    @Synchronized
+    fun reviewTime(ctx: Context, task: String, date: LocalDate): String? {
+
+        val t = findTask(task) ?: return null
+        val live = activeOn(t, date)
+        if (live.isEmpty()) return null
+
+        val i = live[0]
+
+        load(ctx)
+
+        if (!credited.contains(idOf(t) + "\t" + i.key) || !isDone(ctx, i)) return null
+
+        val target = t.spec.target
+        val minutes = Study.minutesIn(ctx, task, i.due, endOf(i))
+        val enough = if (target <= 0) minutes > 0 else minutes >= target
+
+        if (enough) return null
+
+        setDone(ctx, i, false)
+
+        return "${t.name} is no longer marked done, because that time was removed."
+    }
 
     private fun byTime(a: Instance, b: Instance): Int {
         val ta = if (a.task.spec.minutes >= 0) a.task.spec.minutes else 99999
