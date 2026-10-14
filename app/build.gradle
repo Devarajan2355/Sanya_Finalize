@@ -63,11 +63,9 @@ dependencies {
     implementation 'net.java.dev.jna:jna:5.13.0@aar'
     implementation 'com.alphacephei:vosk-android:0.3.47'
 
-    // Local Sherpa-ONNX AAR for Piper TTS (NaturalVoice.kt).
-    // Put the compatible AAR at app/libs/sherpa-onnx-android.aar before syncing.
-    implementation files('libs/sherpa-onnx-android.aar')
+    // sherpa-onnx for Piper TTS (NaturalVoice.kt)
+    implementation 'com.github.k2-fsa.sherpa-onnx:android/SherpaOnnxAar:v1.13.8'
 
-    // Keep ONNX Runtime only if the AAR you built/downloaded does NOT bundle it
-    // and your Sherpa-ONNX version requires this exact Maven artifact.
-    // Do not add a second ONNX Runtime version without checking the AAR's README/POM.
+    // ONNX Runtime (pulled in by sherpa-onnx, but pin the version)
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.17.3'
 }
