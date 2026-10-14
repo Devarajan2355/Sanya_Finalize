@@ -63,9 +63,8 @@ dependencies {
     implementation 'net.java.dev.jna:jna:5.13.0@aar'
     implementation 'com.alphacephei:vosk-android:0.3.47'
 
-    // sherpa-onnx for Piper TTS (NaturalVoice.kt)
-    implementation 'com.github.k2-fsa:sherpa-onnx-android:1.10.22'
-
-    // ONNX Runtime (pulled in by sherpa-onnx, but pin the version)
-    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.17.3'
+    // Piper TTS (NaturalVoice.kt) loads sherpa-onnx by reflection, so it is optional.
+    // To enable it, put the sherpa-onnx Android AAR in app/libs/ and it is picked up here.
+    // (The JitPack coordinate com.github.k2-fsa:sherpa-onnx-android does not exist: 401.)
+    implementation fileTree(dir: 'libs', include: ['*.aar', '*.jar'])
 }
