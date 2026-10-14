@@ -63,7 +63,9 @@ dependencies {
     implementation 'net.java.dev.jna:jna:5.13.0@aar'
     implementation 'com.alphacephei:vosk-android:0.3.47'
 
-    // Use the static-link Sherpa-ONNX AAR so the native ONNX runtime is bundled.
-    // The app does not need a separate onnxruntime dependency when using this AAR.
-    implementation files('libs/sherpa-onnx-static-link-onnxruntime-1.12.1.aar')
+    // sherpa-onnx for Piper TTS (NaturalVoice.kt)
+    implementation 'com.github.k2-fsa:sherpa-onnx-android:1.10.22'
+
+    // ONNX Runtime (pulled in by sherpa-onnx, but pin the version)
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.17.3'
 }
