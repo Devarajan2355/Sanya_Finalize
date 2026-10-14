@@ -1,5 +1,19 @@
-pluginManagement { repositories { google() mavenCentral() gradlePluginPortal() } }
-dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS) repositories { google() mavenCentral() maven { url 'https://jitpack.io' } 
- // required to resolve com.github.k2-fsa:sherpa-onnx-android } }
-rootProject.name = "Sanya" 
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' } // required to resolve com.github.k2-fsa:sherpa-onnx-android
+    }
+}
+
+rootProject.name = "Sanya"
 include ':app'
