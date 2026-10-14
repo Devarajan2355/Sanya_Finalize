@@ -63,9 +63,11 @@ dependencies {
     implementation 'net.java.dev.jna:jna:5.13.0@aar'
     implementation 'com.alphacephei:vosk-android:0.3.47'
 
-    // sherpa-onnx for Piper TTS (NaturalVoice.kt)
-    implementation 'com.github.k2-fsa.sherpa-onnx:android/SherpaOnnxAar:v1.13.8'
+    // Use the prebuilt Sherpa-ONNX AAR from the Hugging Face repo:
+    // https://huggingface.co/csukuangfj/sherpa-onnx-libs/tree/main/android/aar/1.12.1
+    // Download the .aar file into app/libs and keep the filename below aligned.
+    implementation files('libs/sherpa-onnx-1.12.1.aar')
 
-    // ONNX Runtime (pulled in by sherpa-onnx, but pin the version)
+    // Keep ONNX Runtime only if the AAR you downloaded does NOT bundle it.
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.17.3'
 }
